@@ -3,6 +3,16 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.7.0 — Background jobs
+
+Long-running `exec` / `script_run` can now run detached with `background=true`:
+the agent acks immediately (returning a `job_id`) and reports completion as a
+`job_completed` event over the existing agent→hub channel — no protocol change.
+The wall-clock ceiling for a background op is raised to 3600s, and the timeout
+branch is marked so the hub can distinguish `succeeded` / `failed` / `timeout`.
+This is the agent half of the notifications feature; the hub surfaces results
+via a notifications pool and optional Telegram/email pushes.
+
 ## 0.4.0 — Windows support
 
 SentinelX now runs natively on **Windows**, alongside Linux (systemd) and
