@@ -16,6 +16,7 @@ from typing import Any
 
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.executor_engine import run_shell
+from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
 from sentinelx_core import platform_guidance as _pg
 
@@ -122,7 +123,13 @@ def make_exec_handler(policy: Policy):
         if not command or not isinstance(command, str):
             raise HandlerError("invalid_payload", "missing or non-string 'command'")
 
-        timeout = min(timeout, policy.exec_timeout_max)
+        # Background ops get a higher wall-clock ceiling (the whole point of
+        # running detached); interactive exec stays bounded by policy.
+        if payload.get("background"):
+            ceiling = max(policy.exec_timeout_max, BACKGROUND_TIMEOUT_MAX)
+        else:
+            ceiling = policy.exec_timeout_max
+        timeout = min(timeout, ceiling)
 
         if not policy.is_command_allowed(command):
             problem, suggestion = _classify_rejection(command)

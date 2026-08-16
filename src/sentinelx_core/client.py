@@ -18,6 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -39,6 +40,7 @@ from sentinelx_protocol import (
 from sentinelx_core import AGENT_VERSION
 from sentinelx_core.executor import Executor
 from sentinelx_core.identity import Identity
+from sentinelx_core.jobs import build_completed_event_data
 
 logger = logging.getLogger(__name__)
 
@@ -391,11 +393,82 @@ class HubClient:
             else:
                 logger.warning("unexpected message type: %s", msg.type)  # type: ignore[union-attr]
 
+    async def _start_background_job(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        request: Any,  # RequestMessage
+    ) -> None:
+        """Ack a background op as "running" at once, then run it detached and
+        emit a job_completed event when it finishes. The immediate ack is a
+        normal response on the request id, so the hub's pending future for the
+        call resolves right away instead of blocking on the real result."""
+        job_id = request.payload.get("job_id") or f"job_{uuid4().hex[:12]}"
+        started_at = datetime.now(timezone.utc)
+        ack = {
+            "type": "response",
+            "id": request.id,
+            "ok": True,
+            "result": {
+                "status": "running",
+                "job_id": job_id,
+                "tool": request.op,
+                "host": self._identity.host_id,
+            },
+        }
+        await ws.send(json.dumps(ack, default=str))
+        asyncio.create_task(
+            self._run_job_and_report(ws, request, job_id, started_at)
+        )
+
+    async def _run_job_and_report(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        request: Any,  # RequestMessage
+        job_id: str,
+        started_at: datetime,
+    ) -> None:
+        """Run the op to completion and emit its job_completed event. Never
+        raises into the caller: a failed op is a completed job with
+        status=failed, and even an emit failure is only logged (the hub's
+        §3d reaper covers a job whose event never arrives)."""
+        try:
+            response = await self._executor.dispatch(request)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("background job crashed on %s", request.op)
+            response = {
+                "ok": False,
+                "error": {"code": "internal_error", "message": str(exc)},
+            }
+        data = build_completed_event_data(
+            job_id=job_id,
+            op=request.op,
+            host=self._identity.host_id,
+            dispatch_response=response,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+        )
+        try:
+            await ws.send(
+                EventMessage(
+                    kind="job_completed",
+                    data=data,
+                    timestamp=datetime.now(timezone.utc),
+                ).model_dump_json()
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to emit job_completed for %s", job_id)
+
     async def _handle_request(
         self,
         ws: websockets.WebSocketClientProtocol,
         request: Any,  # RequestMessage
     ) -> None:
+        # Background ops (spec §3): ack "running" now, run detached, and report
+        # completion as a job_completed event. notify_* implies background; the
+        # hub sets payload["background"] and payload["job_id"].
+        if request.payload.get("background"):
+            await self._start_background_job(ws, request)
+            return
         try:
             response = await self._executor.dispatch(request)
         except Exception as exc:  # noqa: BLE001

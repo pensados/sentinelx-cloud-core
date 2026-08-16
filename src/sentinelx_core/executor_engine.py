@@ -72,6 +72,7 @@ async def run_shell(
                 "output": "⏱️ Timeout",
                 "duration": round(time.time() - start, 2),
                 "returncode": -1,
+                "timed_out": True,
             }
 
         stdout = stdout_b.decode(errors="replace").strip()

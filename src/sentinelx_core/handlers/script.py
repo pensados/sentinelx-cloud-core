@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
 
 # Hard limits, mirror legacy behavior
@@ -53,6 +54,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
         cleanup = bool(payload.get("cleanup", True))
         filename = payload.get("filename")
         env_extra = payload.get("env") or {}
+        background = bool(payload.get("background", False))
 
         # Validation, mirrors legacy ScriptRunRequest
         if interpreter not in ALLOWED_INTERPRETERS:
@@ -62,14 +64,21 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             )
         if not content or not str(content).strip():
             raise HandlerError("invalid_payload", "missing 'content'")
-        if timeout < TIMEOUT_MIN or timeout > TIMEOUT_MAX:
+        max_timeout = BACKGROUND_TIMEOUT_MAX if background else TIMEOUT_MAX
+        if timeout < TIMEOUT_MIN or timeout > max_timeout:
+            hint = (
+                ""
+                if background
+                else (
+                    f" For work longer than {TIMEOUT_MAX // 60} minutes, run it "
+                    "in the background (background=true) and poll the result "
+                    "with notifications(check) instead of blocking."
+                )
+            )
             raise HandlerError(
                 "invalid_payload",
-                f"timeout must be between {TIMEOUT_MIN} and {TIMEOUT_MAX} "
-                f"seconds. For work that takes longer than {TIMEOUT_MAX // 60} "
-                "minutes, don't block on it: launch it in the background "
-                "(e.g. `nohup ... &`, a systemd unit, or screen/tmux) and "
-                "poll for the result with a separate short call instead.",
+                f"timeout must be between {TIMEOUT_MIN} and {max_timeout} "
+                f"seconds.{hint}",
             )
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             raise HandlerError("invalid_payload", "'args' must be a list of strings")
@@ -167,6 +176,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     "output": "⏱️ Timeout",
                     "duration": round(time.time() - start, 2),
                     "returncode": -1,
+                    "timed_out": True,
                 }
             except FileNotFoundError as exc:
                 # interpreter binary missing
