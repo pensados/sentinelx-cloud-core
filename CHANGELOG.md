@@ -3,6 +3,16 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.9.1 — Self-update playbook fix — 2026-08-17
+
+The bundled `update_sentinelx_code` playbook in `config.example.yaml` now uses
+`sentinel_script_run` for its inspection and reinstall steps instead of
+`sentinel_exec` — the old steps used shell pipes and a bare `sudo`, which the
+default command policy rejects, so the canonical self-update playbook could not
+run end-to-end as written. Behaviour is otherwise unchanged. No agent code
+changed; this only updates the shipped default config, so existing installs are
+unaffected until they re-sync their config.
+
 ## 0.9.0 — Advertise preferred toolset profile — 2026-08-17
 
 The agent can now advertise, in its `hello`, which MCP toolset profile it

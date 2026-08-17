@@ -354,52 +354,16 @@ playbooks:
       the AGENT CODE only — config changes are handled separately by
       sync_sentinelx_config.
     steps:
-      - "Check the current commit with sentinel_exec: 'cd
-         /opt/sentinelx-cloud-core && sudo -u sentinelx git log --oneline -1'.
-         Note the SHA. This is what we'll be moving away from."
-      - "Fetch and compare with sentinel_exec: 'cd /opt/sentinelx-cloud-core
-         && sudo -u sentinelx git fetch origin main && sudo -u sentinelx
-         git log HEAD..origin/main --oneline'. If the output is EMPTY, the
-         agent is already up to date — STOP HERE and tell the user. If
-         non-empty, summarize the incoming commits before pulling."
-      - "Check pip install mode with sentinel_exec: 'sudo
-         /opt/sentinelx-cloud-core/.venv/bin/pip show sentinelx-cloud-core
-         | grep -E \"Editable|Location\"'. If 'Editable project location:'
-         is present, the install is editable and a git pull is sufficient.
-         If absent, pip reinstall will be required after the pull (older
-         installs predate commit 030190c which switched the installer to
-         editable mode)."
-      - "Check whether new dependencies are needed with sentinel_exec: 'cd
-         /opt/sentinelx-cloud-core && sudo -u sentinelx git diff
-         HEAD..origin/main --name-only | grep -E
-         \"pyproject|setup\\.py|setup\\.cfg|requirements\"'. If output is
-         non-empty, pip reinstall will be needed even on editable installs
-         (new deps to fetch). If empty, code-only update."
-      - "Pull with sentinel_exec: 'cd /opt/sentinelx-cloud-core && sudo -u
-         sentinelx git pull --ff-only origin main'. If --ff-only fails, the
-         working tree has local changes — STOP and tell the user; this is
-         not a routine update path and probably needs human review."
-      - "(Conditional) If step 3 said NOT editable OR step 4 found
-         pyproject changes, reinstall with sentinel_exec: 'sudo
-         /opt/sentinelx-cloud-core/.venv/bin/pip install -e
-         /opt/sentinelx-cloud-core'. Otherwise, skip this step."
-      - "Restart the agent. Two paths (same as add_allowed_command):
-         (a) if sentinelx-cloud-core is declared in services:
-             sentinel_service action='restart' service='sentinelx-cloud-core'.
-             The WS session will drop while the agent restarts itself; this
-             is expected. The agent reconnects to the hub automatically.
-         (b) if NOT declared: ask the user to run on a real terminal: 'sudo
-             systemctl restart sentinelx-cloud-core'."
-      - "Verify with sentinel_capabilities. The agent should respond and
-         the response should reflect any new capabilities. If capabilities
-         errors out, the new version may have a startup bug — check the
-         journal with sentinel_exec: 'sudo journalctl -u sentinelx-cloud-core
-         -n 30 --no-pager'."
-      - "(Optional follow-up) Mention to the user that config.example.yaml
-         may have new playbooks, services, or commands not yet in their
-         /etc/sentinelx/config.yaml. Offer to walk through them via the
-         sync_sentinelx_config playbook. Don't run that automatically — the
-         user decides whether to adopt new config defaults."
+      - "Check the current commit with sentinel_script_run (interpreter=bash): 'cd /opt/sentinelx-cloud-core && git log --oneline -1'. Note the SHA. This is what we'll be moving away from."
+      - "Fetch and compare with sentinel_script_run (interpreter=bash): 'cd /opt/sentinelx-cloud-core && git fetch origin main && git log HEAD..origin/main --oneline'. If the output is EMPTY, the agent is already up to date — STOP HERE and tell the user. If non-empty, summarize the incoming commits before pulling."
+      - "Check pip install mode with sentinel_script_run (interpreter=bash): '/opt/sentinelx-cloud-core/.venv/bin/pip show sentinelx-cloud-core | grep -E \"Editable|Location\"'. If 'Editable project location:' is present, the install is editable and a git pull is sufficient. If absent, pip reinstall will be required after the pull (older installs predate commit 030190c which switched the installer to editable mode)."
+      - "Check whether new dependencies are needed with sentinel_script_run (interpreter=bash): 'cd /opt/sentinelx-cloud-core && git diff HEAD..origin/main --name-only | grep -E \"pyproject|setup\\.py|setup\\.cfg|requirements\"'. If output is non-empty, pip reinstall will be needed even on editable installs (new deps to fetch). If empty, code-only update."
+      - "Pull with sentinel_script_run (interpreter=bash): 'cd /opt/sentinelx-cloud-core && git pull --ff-only origin main'. If --ff-only fails, the working tree has local changes — STOP and tell the user; this is not a routine update path and probably needs human review."
+      - "(Conditional) If step 3 said NOT editable OR step 4 found pyproject changes, reinstall with sentinel_script_run (interpreter=bash, sudo=true): '/opt/sentinelx-cloud-core/.venv/bin/pip install -e /opt/sentinelx-cloud-core'. Otherwise, skip this step."
+      - "Restart the agent. Two paths (same as add_allowed_command): (a) if sentinelx-cloud-core is declared in services: sentinel_service action='restart' service='sentinelx-cloud-core'. The WS session will drop while the agent restarts itself; this is expected. The agent reconnects to the hub automatically. (b) if NOT declared: ask the user to run on a real terminal: 'sudo systemctl restart sentinelx-cloud-core'."
+      - "Verify with sentinel_capabilities. The agent should respond and the response should reflect any new capabilities. If capabilities errors out, the new version may have a startup bug — check the journal with sentinel_exec: 'sudo journalctl -u sentinelx-cloud-core -n 30 --no-pager'."
+      - "(Optional follow-up) Mention to the user that config.example.yaml may have new playbooks, services, or commands not yet in their /etc/sentinelx/config.yaml. Offer to walk through them via the sync_sentinelx_config playbook. Don't run that automatically — the user decides whether to adopt new config defaults."
+
     requires:
       - "sudo access on /opt/sentinelx-cloud-core (set up by the installer)."
       - "git, pip, journalctl in the allowlist (all in the default config)."
