@@ -6,7 +6,7 @@ ONE agent op ``git`` with an internal ``operation`` selector:
                                   current changes — replaces a chain of
                                   status / diff --stat / diff <file> exec calls.
   - ``apply_patch`` (rw mutation): apply one unified diff touching several
-                                  files, all-or-nothing (added in Phase 2).
+                                  files, all-or-nothing.
 
 Why one op with an internal selector (not two agent ops)? It keeps the agent
 surface small and mirrors how the hub presents compute/notifications as one
@@ -40,6 +40,7 @@ _MAX_PATCH_BYTES_CEILING = 131072  # 128 KiB: per-file patch byte cap
 _MAX_TOTAL_PATCH_BYTES = 524288    # 512 KiB: whole-response patch budget
 _MAX_CONTEXT_LINES = 10            # clamp for unified context
 _DEFAULT_CONTEXT_LINES = 3
+_MAX_APPLY_PATCH_BYTES = 5 * 1024 * 1024  # 5 MiB: reject absurd patches early
 
 _GIT_CMD_TIMEOUT = 15  # seconds, per git invocation
 _TOTAL_TIMEOUT = 45    # seconds, whole operation
@@ -59,8 +60,7 @@ async def _run_git(
     """Run a fixed git argv under ``root``. Returns (rc, stdout, stderr).
 
     NEVER a shell. Optional ``stdin`` bytes are fed to the process (used by
-    apply_patch to pass the patch without a temp file). ``--no-ext-diff`` /
-    ``core.fsmonitor=false`` are set by callers/here to keep runs hermetic.
+    apply_patch to pass the patch without a temp file).
     """
     env = {**os.environ, **_GIT_ENV}
     proc = await asyncio.create_subprocess_exec(
@@ -106,8 +106,8 @@ def _clamp_int(value: Any, default: int, lo: int, hi: int) -> int:
 
 async def _revalidate_git_root(policy: Policy, root: Path, path: str) -> Path:
     """Confirm ``root`` is inside a git repo AND the repo root is STILL inside
-    the file_ops allowlist. A repo whose real root sits ABOVE an allowed path
-    is rejected — we never silently climb out of the sandbox."""
+    the file_ops allowlist (read access). A repo whose real root sits ABOVE an
+    allowed path is rejected — we never silently climb out of the sandbox."""
     rc, out, _ = await _run_git(root, "rev-parse", "--show-toplevel")
     if rc != 0 or not out.strip():
         raise HandlerError(
@@ -183,7 +183,6 @@ def _parse_name_status(raw: bytes) -> list[dict[str, Any]]:
     score and TWO paths (old, new); we key on the NEW path.
     """
     tokens = [t for t in raw.split(b"\x00")]
-    # Drop a trailing empty token from the final NUL, but keep internal empties out.
     out: list[dict[str, Any]] = []
     i = 0
     n = len(tokens)
@@ -212,18 +211,11 @@ def _parse_name_status(raw: bytes) -> list[dict[str, Any]]:
 
 
 def _diff_selector(base_ref: str, staged: bool, unstaged: bool) -> list[str]:
-    """Return the base ``git diff`` argv for the requested view.
-
-    - staged AND unstaged -> working tree vs base_ref (default HEAD): everything
-      currently changed relative to the last commit.
-    - staged only         -> index vs base_ref (``--cached``).
-    - unstaged only       -> working tree vs index (no ref).
-    """
+    """Return the base ``git diff`` argv for the requested view."""
     if staged and unstaged:
         return ["diff", base_ref]
     if staged:
         return ["diff", "--cached", base_ref]
-    # unstaged only
     return ["diff"]
 
 
@@ -263,13 +255,11 @@ async def _op_diff(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
         git_root = await _revalidate_git_root(policy, root, path)
         selector = _diff_selector(base_ref, staged, unstaged)
 
-        # Whole-view summary (counts changed tracked files only).
         _, ns_all, _ = await _run_git(
             git_root, *selector, "--no-ext-diff", "--numstat", "-z"
         )
         files_total, ins_total, dels_total = _sum_numstat(ns_all)
 
-        # Ordered change list + status letters.
         _, nstat, _ = await _run_git(
             git_root, *selector, "--no-ext-diff", "--name-status", "-z"
         )
@@ -287,7 +277,6 @@ async def _op_diff(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
         truncated_patch = False
         budget = _MAX_TOTAL_PATCH_BYTES
 
-        # Tracked changes first (they carry patches), then untracked names.
         kept = changed[:max_files]
         if len(changed) > max_files:
             truncated_files = True
@@ -326,7 +315,6 @@ async def _op_diff(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
                     budget -= len(praw)
             files_out.append(entry)
 
-        # Untracked entries (names only in V1), subject to the same file cap.
         if include_untracked:
             room = max_files - len(files_out)
             if room > 0:
@@ -366,15 +354,221 @@ async def _op_diff(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# apply_patch (rw mutation) — implemented in Phase 2
+# apply_patch (rw mutation)
 # ---------------------------------------------------------------------------
 
 
+def _extract_patch_paths(patch: str) -> list[str]:
+    """Enumerate the repo-relative file paths a unified diff targets.
+
+    We parse the ``--- ``/``+++ `` headers (stripping the git ``a/``/``b/``
+    prefix and any trailing tab-timestamp) plus ``rename/copy from|to`` lines.
+    ``/dev/null`` (add/delete side) is ignored. Best-effort but conservative:
+    anything we cannot make sense of is surfaced by the subsequent
+    ``git apply --check`` rather than silently applied. The extracted paths are
+    then validated against the repo root + rw allowlist BEFORE any mutation.
+    """
+    def _strip(rest: str) -> str | None:
+        p = rest.split("\t", 1)[0].strip()
+        if not p or p == "/dev/null":
+            return None
+        if p.startswith(("a/", "b/")):
+            p = p[2:]
+        return p or None
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str | None) -> None:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+
+    for raw in patch.splitlines():
+        if raw.startswith("--- ") or raw.startswith("+++ "):
+            _add(_strip(raw[4:]))
+        elif raw.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            _add(raw.split(" ", 2)[2].strip())
+    return out
+
+
+def _validate_patch_paths(policy: Policy, git_root: Path, paths: list[str]) -> None:
+    """Reject absolute / ``..`` / symlink-escape / out-of-rw target paths BEFORE
+    any git invocation. Each path is canonicalized (symlinks included) via
+    ``policy.resolve_path(need_write=True)`` and must land inside the repo root
+    AND under an rw entry."""
+    rw_paths = [e.path for e in policy.file_ops_paths if e.access == "rw"]
+    for p in paths:
+        if p.startswith('"'):
+            raise HandlerError(
+                "patch_unsafe_path",
+                f"quoted/escaped path is not supported in V1: {p!r}",
+            )
+        if os.path.isabs(p):
+            raise HandlerError(
+                "patch_unsafe_path", f"absolute path in patch is not allowed: {p!r}"
+            )
+        if ".." in Path(p).parts:
+            raise HandlerError(
+                "patch_unsafe_path", f"'..' in patch path is not allowed: {p!r}"
+            )
+        candidate = git_root / p
+        resolved = policy.resolve_path(str(candidate), need_write=True)
+        if resolved is None:
+            raise HandlerError(
+                "path_not_allowed",
+                f"patch touches a path outside the rw allowlist: {p!r}. "
+                "apply_patch requires every target under a file_ops rw entry.",
+                details={"writable_paths": rw_paths, "path": p},
+            )
+        if resolved != git_root and not resolved.is_relative_to(git_root):
+            raise HandlerError(
+                "patch_unsafe_path",
+                f"patch path escapes the repository root: {p!r}",
+                details={"git_root": str(git_root)},
+            )
+
+
+def _parse_apply_numstat(raw: bytes) -> tuple[int, int, int]:
+    """Parse ``git apply --numstat`` (newline-separated ins\\tdels\\tpath)."""
+    files = ins = dels = 0
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            files += 1
+            try:
+                ins += int(parts[0]) if parts[0] != "-" else 0
+                dels += int(parts[1]) if parts[1] != "-" else 0
+            except ValueError:
+                pass
+    return files, ins, dels
+
+
+def _scrub(text: str, git_root: Path) -> str:
+    """Strip the absolute repo-root prefix from git stderr (don't leak host
+    paths) and bound the length."""
+    gr = str(git_root)
+    return text.replace(gr + os.sep, "").replace(gr, "").strip()[:1000]
+
+
 async def _op_apply_patch(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
-    raise HandlerError(
-        "unsupported_operation",
-        "git apply_patch is not implemented yet (Phase 2).",
-    )
+    req = payload.get("root") or payload.get("path")
+    if not isinstance(req, str) or not req.strip():
+        raise HandlerError(
+            "invalid_payload", "apply_patch requires 'root' (the repository path)."
+        )
+    patch = payload.get("patch")
+    if not isinstance(patch, str) or not patch.strip():
+        raise HandlerError(
+            "invalid_payload",
+            "apply_patch requires a non-empty 'patch' (a unified diff).",
+        )
+    if len(patch.encode("utf-8")) > _MAX_APPLY_PATCH_BYTES:
+        raise HandlerError(
+            "invalid_payload",
+            f"patch exceeds the {_MAX_APPLY_PATCH_BYTES // (1024*1024)} MiB ceiling.",
+        )
+    dry_run = _as_bool(payload.get("dry_run"), False)
+
+    # The target repo MUST be under an rw entry (mutation). Mirrors edit/fsmutate.
+    resolved = policy.resolve_path(req, need_write=True)
+    if resolved is None:
+        raise HandlerError(
+            "path_not_allowed",
+            "apply_patch requires the repository under a file_ops entry with "
+            f"access: rw. {req!r} is not within any rw path.",
+            details={
+                "writable_paths": [
+                    e.path for e in policy.file_ops_paths if e.access == "rw"
+                ]
+            },
+        )
+    if not resolved.exists():
+        raise HandlerError("not_found", f"path does not exist: {req!r}")
+    if not resolved.is_dir():
+        raise HandlerError("is_file", "apply_patch expects the repository directory.")
+
+    async def _work() -> dict[str, Any]:
+        # Revalidate the git root AND require it under rw (not just readable).
+        rc, out, _ = await _run_git(resolved, "rev-parse", "--show-toplevel")
+        if rc != 0 or not out.strip():
+            raise HandlerError(
+                "not_a_git_repo", f"{req!r} is not inside a git repository."
+            )
+        git_root_str = out.decode("utf-8", "replace").strip()
+        git_root = policy.resolve_path(git_root_str, need_write=True)
+        if git_root is None:
+            raise HandlerError(
+                "git_root_outside_allowlist",
+                f"the repository root ({git_root_str!r}) is not under a file_ops "
+                "rw entry; refusing to apply.",
+                details={"git_root": git_root_str},
+            )
+
+        patch_bytes = patch.encode("utf-8")
+
+        # Enumerate + validate every target path BEFORE any git that could mutate.
+        paths = _extract_patch_paths(patch)
+        if not paths:
+            raise HandlerError(
+                "invalid_payload",
+                "could not find any target file paths in the patch (expected a "
+                "unified diff with --- / +++ headers).",
+            )
+        _validate_patch_paths(policy, git_root, paths)
+
+        # Summary from a query-only numstat (never mutates).
+        rc_ns, ns_out, _ = await _run_git(
+            git_root, "apply", "--numstat", "--no-3way", "-", stdin=patch_bytes
+        )
+        files = ins = dels = 0
+        if rc_ns == 0:
+            files, ins, dels = _parse_apply_numstat(ns_out)
+
+        # --check first: validate without mutating. On failure, mutate nothing.
+        rc_chk, _, chk_err = await _run_git(
+            git_root, "apply", "--check", "--no-3way", "-", stdin=patch_bytes
+        )
+        if rc_chk != 0:
+            raise HandlerError(
+                "patch_does_not_apply",
+                _scrub(chk_err.decode("utf-8", "replace"), git_root)
+                or "git apply --check rejected the patch.",
+                details={"root": str(git_root), "dry_run": dry_run},
+            )
+
+        if dry_run:
+            return {
+                "ok": True, "version": 1, "applied": False, "dry_run": True,
+                "root": str(git_root),
+                "summary": {"files": files, "insertions": ins, "deletions": dels},
+            }
+
+        # Apply for real. No --reject: all-or-nothing (git apply is atomic —
+        # it verifies all hunks before touching the working tree).
+        rc_app, _, app_err = await _run_git(
+            git_root, "apply", "--no-3way", "-", stdin=patch_bytes
+        )
+        if rc_app != 0:
+            raise HandlerError(
+                "patch_does_not_apply",
+                _scrub(app_err.decode("utf-8", "replace"), git_root)
+                or "git apply failed after a passing --check.",
+                details={"root": str(git_root), "dry_run": False},
+            )
+
+        return {
+            "ok": True, "version": 1, "applied": True, "dry_run": False,
+            "root": str(git_root),
+            "summary": {"files": files, "insertions": ins, "deletions": dels},
+        }
+
+    try:
+        return await asyncio.wait_for(_work(), timeout=_TOTAL_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HandlerError("timeout", "git apply_patch exceeded its time budget")
 
 
 # ---------------------------------------------------------------------------
