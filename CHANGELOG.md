@@ -3,6 +3,14 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.9.3 — Document preferred_profile in stock examples — 2026-08-17
+
+Documentation only. `agent.preferred_profile` (added in 0.9.0) was only shown in
+`config.orion.example.yaml`; it is now documented as a commented, optional
+`agent:` block in all stock examples (Linux/macOS/Windows), with the advisory /
+dashboard-wins / unanimity / sanitized-invalid semantics inline. No behaviour
+change.
+
 ## 0.9.2 — sync_sentinelx_config playbook fix — 2026-08-17
 
 The bundled `sync_sentinelx_config` playbook no longer uses the local config

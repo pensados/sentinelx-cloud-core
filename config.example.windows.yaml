@@ -1,3 +1,16 @@
+# ============================================================================
+# AGENT PROFILE (optional) — advisory MCP toolset preference
+# ============================================================================
+# Advertise which MCP toolset profile this host prefers: 'compact' or 'full'.
+# ADVISORY only: an explicit dashboard/connection choice always wins; the hub
+# applies 'compact' only when ALL of your connected agents agree (a mix never
+# collapses the connection's toolset); an invalid value is sanitized to no
+# preference. Omit entirely (the default) and stock SentinelX gets the full
+# catalog. Uncomment to use:
+#
+# agent:
+#   preferred_profile: compact   # compact | full
+
 # SentinelX Core - Windows example config (derived from config.example.yaml).
 #
 # SCOPE: the default Windows config. allowed_commands ship READ-ONLY
