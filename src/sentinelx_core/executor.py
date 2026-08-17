@@ -68,6 +68,22 @@ class Executor:
             "exec_timeout_max": p.exec_timeout_max,
         }
 
+    def preferred_profile(self) -> str | None:
+        """The host's advertised MCP toolset-profile preference for the hello.
+
+        Loads the policy and returns its (already-sanitized) preferred_profile
+        ('compact' | 'full' | None). Best-effort: on any load failure returns
+        None, so a bad policy makes the host advertise no preference rather
+        than failing the connection.
+        """
+        try:
+            from sentinelx_core.policy import Policy
+
+            return Policy.from_file(self._config_path).preferred_profile
+        except Exception:
+            logger.warning("preferred_profile: policy load failed", exc_info=True)
+            return None
+
     def _get_upload_base(self) -> Path:
         if self._upload_base is None:
             from sentinelx_core.policy import Policy

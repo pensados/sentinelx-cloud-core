@@ -283,3 +283,27 @@ def test_file_ops_rw_subtree_under_r_parent(tmp_path: Path) -> None:
     assert p.resolve_path(str(carlos / "f"), need_write=True) is not None
     assert p.resolve_path(str(other / "g"), need_write=True) is None
     assert p.resolve_path(str(other / "g"), need_write=False) is not None
+
+
+def test_preferred_profile_valid_values() -> None:
+    """agent.preferred_profile accepts 'compact' and 'full' verbatim."""
+    for value in ("compact", "full"):
+        p = Policy.from_dict(
+            {"agent": {"preferred_profile": value}, "allowed_commands": ["ls"]}
+        )
+        assert p.preferred_profile == value
+
+
+def test_preferred_profile_absent_defaults_to_none() -> None:
+    p = Policy.from_dict({"allowed_commands": ["ls"]})
+    assert p.preferred_profile is None
+
+
+def test_preferred_profile_invalid_degrades_to_none() -> None:
+    """A bad value must degrade to None, never advertise something the hub's
+    Literal would reject (which would fail the hello and take the host offline).
+    """
+    p = Policy.from_dict(
+        {"agent": {"preferred_profile": "tiny"}, "allowed_commands": ["ls"]}
+    )
+    assert p.preferred_profile is None

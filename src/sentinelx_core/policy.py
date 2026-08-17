@@ -97,6 +97,15 @@ class Policy:
     # optional human-readable label for this host
     hostname_label: str | None = None
 
+    # Advisory MCP toolset profile this host prefers ('compact' | 'full'),
+    # advertised in the hello. None (the default) = no preference; stock
+    # SentinelX leaves it None and gets the full catalog. The hub treats this
+    # as a default only, and only under unanimity across the user's agents —
+    # an explicit dashboard choice always wins. Sanitized in from_file: any
+    # value other than 'compact'/'full' degrades to None (never advertises a
+    # bogus value that the hub's Literal would reject).
+    preferred_profile: str | None = None
+
     # exec timeout default
     exec_timeout_default: int = 60
     exec_timeout_max: int = 600
@@ -374,12 +383,33 @@ class Policy:
                     FileOpsPath(path=str(entry), access="r")
                 )
 
+        # Advisory toolset-profile hint (optional). Only 'compact'/'full' are
+        # meaningful; anything else degrades to None with a loud warning so a
+        # typo can't advertise a value the hub's Literal would reject (which
+        # would fail the hello and take the host offline).
+        _raw_profile = agent_block.get("preferred_profile")
+        if _raw_profile in (None, "compact", "full"):
+            _preferred_profile = _raw_profile
+        else:
+            logger.warning(
+                "policy_preferred_profile_invalid",
+                extra={
+                    "value": repr(_raw_profile),
+                    "detail": (
+                        "agent.preferred_profile must be 'compact' or 'full'; "
+                        "ignoring and advertising no preference."
+                    ),
+                },
+            )
+            _preferred_profile = None
+
         policy = cls(
             allowed_commands=tuple(data.get("allowed_commands") or []),
             services=services,
             locations=locations,
             playbooks=dict(data.get("playbooks") or {}),
             hostname_label=agent_block.get("hostname_label"),
+            preferred_profile=_preferred_profile,
             exec_timeout_default=int(exec_block.get("timeout_default", 60)),
             exec_timeout_max=int(exec_block.get("timeout_max", 600)),
             upload_base=Path(
