@@ -14,6 +14,17 @@ agents agree. An invalid value is sanitized to "no preference" with a loud
 warning, so a typo can't fail the hello and take the host offline. Protocol
 pinned to **v1.10.0** (adds the optional `HelloMessage.preferred_profile`).
 
+## 0.8.0 — Structured Git operations (sentinel_git) — 2026-08-17
+
+A new agent op `git` backs the `sentinel_git` tool, with two operations:
+`diff` (a bounded, structured repo diff — one call instead of many
+`git status` / `git diff` round-trips) and `apply_patch` (an atomic
+multi-file unified-diff apply, validated up front with `git apply --check`,
+offered as a `dry_run`, and applied all-or-nothing). Git runs with fixed
+argv (never a shell), a hardened env, and paths bounded by the agent's
+`file_ops` policy — `diff` is read-only, `apply_patch` requires a writable
+path. Protocol pinned to **v1.9.0** (adds the `git` op).
+
 ## 0.7.0 — Background jobs
 
 Long-running `exec` / `script_run` can now run detached with `background=true`:
