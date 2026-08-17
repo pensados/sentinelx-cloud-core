@@ -87,6 +87,8 @@ def make_capabilities_handler(policy: Policy, config_path=None):
                 "read", "list", "search",
                 "read_audit",
                 "move", "copy", "delete", "chmod", "chown",
+                # Structured Git ops (sentinel_git) — see handlers/git_ops.py.
+                "git",
             ],
             "allowed_commands": list(policy.allowed_commands),
             "services": {
