@@ -41,6 +41,7 @@ from sentinelx_core.handlers.fsmutate import (
     make_move_handler,
 )
 from sentinelx_core.handlers.project_snapshot import make_project_snapshot_handler
+from sentinelx_core.handlers.git_ops import make_git_handler
 from sentinelx_core.handlers.script import make_script_run_handler
 from sentinelx_core.handlers.service import make_restart_handler, make_service_handler
 from sentinelx_core.handlers.upload import (
@@ -114,6 +115,10 @@ def build_registry(
         "list": make_list_handler(policy),
         "search": make_search_handler(policy),
         "project_snapshot": make_project_snapshot_handler(policy),
+
+        # Structured Git ops (sentinel_git): diff (read) + apply_patch (rw).
+        # Quarantined here; nothing git-specific bleeds into edit/agnostic core.
+        "git": make_git_handler(policy),
 
         # Local audit log (Story C) — read-only, returns recent on-host
         # audit entries (op + payload). No policy arg: it only reads the
