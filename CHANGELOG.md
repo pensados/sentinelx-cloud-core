@@ -3,6 +3,17 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.9.0 — Advertise preferred toolset profile — 2026-08-17
+
+The agent can now advertise, in its `hello`, which MCP toolset profile it
+prefers, via a new optional `agent.preferred_profile` config knob (`compact` |
+`full`). Stock hosts leave it unset and advertise no preference (the full
+catalog). The hub treats it as an advisory default only — an explicit dashboard
+choice always wins, and `compact` is chosen only when ALL of a user's connected
+agents agree. An invalid value is sanitized to "no preference" with a loud
+warning, so a typo can't fail the hello and take the host offline. Protocol
+pinned to **v1.10.0** (adds the optional `HelloMessage.preferred_profile`).
+
 ## 0.7.0 — Background jobs
 
 Long-running `exec` / `script_run` can now run detached with `background=true`:

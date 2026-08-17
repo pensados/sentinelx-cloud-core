@@ -328,6 +328,7 @@ class HubClient:
                     **_gather_machine_info(),
                 ),
                 capabilities=self._executor.capability_names(),
+                preferred_profile=self._executor.preferred_profile(),
             )
             await ws.send(hello.model_dump_json())
 
