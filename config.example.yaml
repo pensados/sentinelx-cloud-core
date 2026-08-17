@@ -404,48 +404,14 @@ playbooks:
       touched by git pull, so improvements to config.example.yaml don't
       propagate automatically. This playbook helps adopt them selectively.
     steps:
-      - "Verify the repo is up to date by checking that
-         /opt/sentinelx-cloud-core/config.example.yaml is newer than the
-         user's last sync. The simplest signal: check 'cd
-         /opt/sentinelx-cloud-core && sudo -u sentinelx git log -1
-         --format=%ci config.example.yaml' against the mtime of
-         /etc/sentinelx/config.yaml. If the example is older or equal,
-         suggest running update_sentinelx_code first."
-      - "Compute the diff with sentinel_exec: 'sudo diff
-         /etc/sentinelx/config.yaml
-         /opt/sentinelx-cloud-core/config.example.yaml'. Show the user the
-         output. The diff will fall into categories: new playbook entries,
-         new service declarations, new commands in the allowlist, updated
-         comments, and (rarely) removed options. The user's customizations
-         that aren't in the example are PRESERVED — they only show up as
-         lines marked '<' in the diff."
-      - "Walk the user through each diff hunk and categorize it. Suggested
-         framing: 'New feature you might want' (playbooks, services), 'New
-         documentation' (comments), 'Your customization (preserve)'
-         (anything in user but not in example), 'Possibly obsolete'
-         (anything removed in the example). Ask which categories to merge."
-      - "For each section the user wants to adopt, use sentinel_edit in
-         'replace' mode with sudo=true and validator_preset='yaml'. Anchor
-         each insert on a stable line (e.g., a section comment header
-         like '# ============================================================================').
-         Make ONE edit at a time, NOT a wholesale file replace — that
-         would lose user customizations. After each edit, the agent
-         creates a .bak file automatically; mention this to the user."
-      - "After all edits, sanity-check the result with sentinel_exec:
-         'sudo cat /etc/sentinelx/config.yaml | python3 -c \"import sys,
-         yaml; yaml.safe_load(sys.stdin); print(\\\"YAML OK\\\")\"'.
-         If this fails, an edit produced invalid YAML — restore from one
-         of the .bak files (sentinel_edit creates one per edit) and try
-         again with smaller hunks."
-      - "Reload the agent (same as update_sentinelx_code step 7): either
-         (a) sentinel_service action='restart' service='sentinelx-cloud-core',
-         or (b) ask the user for a manual restart if the service isn't
-         declared yet."
-      - "Verify with sentinel_capabilities — new playbooks and services
-         should appear in the response. If a new playbook is now present
-         but references a service the user hasn't declared, warn the user
-         that the playbook will fail at runtime until that service is
-         added."
+      - "Do NOT infer sync state from file mtimes. The mtime of /etc/sentinelx/config.yaml changes whenever the operator edits any local customization, so it can look 'newer' than an upstream config.example.yaml change the user never adopted — using it as a 'last sync' signal produces false 'already synced' conclusions and hides new playbooks, services, or security defaults. The authoritative signal is the diff itself (next step): an empty diff means in sync, a non-empty diff means there are upstream changes to review. Optionally run update_sentinelx_code first so the checkout's config.example.yaml is current (it only changes when the agent code is updated)."
+      - "Compute the diff with sentinel_exec: 'sudo diff /etc/sentinelx/config.yaml /opt/sentinelx-cloud-core/config.example.yaml'. Show the user the output. The diff falls into categories: new playbook entries, new service declarations, new commands in the allowlist, updated comments, and (rarely) removed options. The user's customizations that aren't in the example are PRESERVED — they only show up as lines marked '<' in the diff."
+      - "Walk the user through each diff hunk and categorize it. Suggested framing: 'New feature you might want' (playbooks, services), 'New documentation' (comments), 'Your customization (preserve)' (anything in user but not in example), 'Possibly obsolete' (anything removed in the example). Ask which categories to merge."
+      - "For each section the user wants to adopt, use sentinel_edit in 'replace' mode with sudo=true and validator_preset='yaml'. Anchor each insert on a stable line (e.g. a section comment header like '# ============================================================================'). Make ONE edit at a time, NOT a wholesale file replace — that would lose user customizations. After each edit, the agent creates a .bak file automatically; mention this to the user."
+      - "After all edits, sanity-check the result with sentinel_script_run (interpreter=bash): sudo cat /etc/sentinelx/config.yaml | python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' && echo YAML_OK. If YAML_OK prints, the config parses; if it errors, an edit produced invalid YAML — restore from one of the .bak files (sentinel_edit creates one per edit) and try again with smaller hunks."
+      - "Reload the agent (same as update_sentinelx_code): either (a) sentinel_service action='restart' service='sentinelx-cloud-core', or (b) ask the user for a manual restart if the service isn't declared yet."
+      - "Verify with sentinel_capabilities — new playbooks and services should appear in the response. If a new playbook is now present but references a service the user hasn't declared, warn the user that the playbook will fail at runtime until that service is added."
+
     requires:
       - "sudo access on /etc/sentinelx/config.yaml."
       - "git repo at /opt/sentinelx-cloud-core/ with recent fetch (run

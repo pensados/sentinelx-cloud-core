@@ -3,6 +3,15 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.9.2 — sync_sentinelx_config playbook fix — 2026-08-17
+
+The bundled `sync_sentinelx_config` playbook no longer uses the local config
+file's mtime as a "last sync" signal — a local edit bumps that mtime and could
+mask an upstream `config.example.yaml` change the operator never adopted, so the
+diff (empty = in sync) is now the authoritative signal. The YAML sanity-check
+step also moves from `sentinel_exec` (which rejected its shell pipe) to
+`sentinel_script_run`. Config-example only; no agent code changed.
+
 ## 0.9.1 — Self-update playbook fix — 2026-08-17
 
 The bundled `update_sentinelx_code` playbook in `config.example.yaml` now uses
