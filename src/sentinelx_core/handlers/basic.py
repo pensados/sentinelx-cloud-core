@@ -9,6 +9,11 @@ from typing import Any
 
 from sentinelx_core import AGENT_VERSION
 from sentinelx_core import platform_guidance as _pg
+from sentinelx_core.handlers.progressive_help import (
+    capabilities_detail,
+    select_help_response,
+    summarize_capabilities,
+)
 from sentinelx_core.policy import Policy
 
 
@@ -50,6 +55,7 @@ def make_capabilities_handler(policy: Policy, config_path=None):
         This is the dynamic equivalent of legacy SentinelX's GET /capabilities.
         Output is shaped to be friendly for an LLM tool: lists, dicts, no fluff.
         """
+        detail = capabilities_detail(payload)
         locations = {
             label: {"path": spec.path, "description": spec.description}
             for label, spec in policy.locations.items()
@@ -63,7 +69,7 @@ def make_capabilities_handler(policy: Policy, config_path=None):
                 "path": str(config_path),
                 "description": "The agent's active config.yaml.",
             }
-        return {
+        result = {
             "agent": "sentinelx-cloud-core",
             "version": AGENT_VERSION,
             "host": {
@@ -157,6 +163,9 @@ def make_capabilities_handler(policy: Policy, config_path=None):
                 "max_search_results": policy.file_ops_max_search_results,
             },
         }
+        if detail == "summary":
+            return summarize_capabilities(result)
+        return result
 
     return handle_capabilities
 
@@ -168,7 +177,7 @@ def make_help_handler(policy: Policy):
         example tasks and reference links."""
         paths = policy.file_ops_paths
         writable = [p for p in paths if getattr(p, "access", "r") == "rw"]
-        return {
+        full = {
             "agent": "sentinelx-cloud-core",
             "version": AGENT_VERSION,
             "host_label": policy.hostname_label,
@@ -308,6 +317,7 @@ def make_help_handler(policy: Policy):
                 "origin_story": "How I Accidentally Built an MCP Server for My Linux Servers: https://carolusx.medium.com/how-i-accidentally-built-an-mcp-server-for-my-linux-servers-11a288feb899",
             },
         }
+        return select_help_response(payload, full, policy.playbooks)
     return handle_help
 
 
