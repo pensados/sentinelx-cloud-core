@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.10.0 — Progressive, profile-neutral help & bounded capabilities — 2026-08-17
+
+`help` and `capabilities` now accept optional selectors for progressive, bounded
+introspection (contributed by @FalconZip, #23). `help({topic|path|playbook, offset,
+limit})` returns a small index or one exact leaf instead of the whole tree, and
+`capabilities({detail:"summary"})` returns discovery metadata without command/service
+values or playbook bodies. Empty payloads (`help({})`, `capabilities({})`) are
+unchanged, so existing callers are unaffected. Scoped help responses normalize
+full-profile `sentinel_*` names to profile-neutral `op:<name>` (with a
+`tool_reference_map` back to the source), so the compact profile's context savings
+aren't handed back on the first introspection call. Logic isolated in a new
+`handlers/progressive_help.py`; 15 new tests.
+
 ## 0.9.3 — Document preferred_profile in stock examples — 2026-08-17
 
 Documentation only. `agent.preferred_profile` (added in 0.9.0) was only shown in
