@@ -115,10 +115,36 @@ The agent exposes its host's operations as MCP tools to your LLM via the hub:
 | `sentinel_read` | Read a file's contents, with optional line-range slicing |
 | `sentinel_list` | Structured directory listing (name, type, size, mtime) |
 | `sentinel_search` | Recursive content search with regex and glob filters |
-| `sentinel_capabilities` | Returns the host's allowlist + service definitions |
-| `sentinel_help` | A short summary of the agent plus counts of allowed commands, services, and playbooks |
+| `sentinel_capabilities` | Host policy/capabilities; optional bounded summary projection |
+| `sentinel_help` | Rich orientation/help; optional topic/path/single-playbook projections |
 | `sentinel_state` | Internal agent state, for debugging |
 | `sentinel_ping` | Cheap connectivity check |
+
+### Progressive introspection (agent operation contract)
+
+The agent-side `help` and `capabilities` operations also support optional
+narrow-response selectors. A Hub/MCP profile may expose these fields through
+whatever model-facing tool shape it uses; the selectors are backend-operation
+semantics and do not depend on full vs compact tool names.
+
+- `help({"topic":"index"})` — small topic + paged playbook index.
+- `help({"topic":"security"})` — one broad help section.
+- `help({"path":"security_model.permission_errors"})` — one exact leaf from
+  the existing help tree.
+- `help({"playbook":"update_sentinelx_code"})` — one playbook only; optional
+  `path`, `offset`, and `limit` can select/page a subfield such as `steps`.
+- `capabilities({"detail":"summary"})` — host/operation/limit metadata and
+  policy counts without command/service/location/playbook bodies.
+
+Progressive help/playbook responses normalize explicit full-profile
+`sentinel_*` references to `op:<name>` canonical operation hints so the same
+guidance can be routed through compact or full presentation without teaching a
+playbook two sets of MCP tool names.
+
+For compatibility, empty `help({})` and `capabilities({})` requests retain the
+legacy full responses. A Hub that wants compact-first behavior should map its
+compact help/capabilities branches to the narrow selectors rather than changing
+the agent's legacy empty-payload semantics.
 
 `sentinel_read`, `sentinel_list`, and `sentinel_search` are **read-only
 filesystem primitives**. `sentinel_edit` and the mutating primitives
