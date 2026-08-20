@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.0 — Response bounding (issue #24, repro C) — 2026-08-20
+
+Outbound sends are now bounded before they hit the WebSocket frame limit.
+`bound_response()` (from sentinelx-cloud-protocol >= 1.11.0) runs before the
+send in `_handle_request` (normal response and executor-crash error) and
+before the `job_completed` event in `_run_job_and_report`: an oversized
+result is truncated to a head+tail slice with truncation metadata
+(`response_truncated`, `original_bytes`, `delivered_bytes`,
+`continuation_available=false`, `execution_status`) instead of tripping the
+hub frame limit and closing with code 1009 ("message too big"). An executed
+operation is never turned into a delivery failure. No wire/protocol change;
+protocol re-pin to v1.11.0 lands with the release tag.
+
 ## 0.10.0 — Progressive, profile-neutral help & bounded capabilities — 2026-08-17
 
 `help` and `capabilities` now accept optional selectors for progressive, bounded

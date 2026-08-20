@@ -31,6 +31,7 @@ from sentinelx_protocol import (
     HelloMessage,
     HostInfo,
     PongMessage,
+    bound_response,
     decode_binary_frame,
     encode_binary_frame,
     is_binary_transfer_frame,
@@ -440,6 +441,10 @@ class HubClient:
                 "ok": False,
                 "error": {"code": "internal_error", "message": str(exc)},
             }
+        # A job_completed event rides the same WS frame limit as a
+        # synchronous response, so bound its result too (issue #24, repro C).
+        if isinstance(response, dict):
+            response, _ = bound_response(response)
         data = build_completed_event_data(
             job_id=job_id,
             op=request.op,
@@ -506,6 +511,11 @@ class HubClient:
             # via normal request/response and reads bytes/eof. The binary frame
             # is sent first, so by the time this ack arrives at the Hub the chunk
             # is already queued there.
+        # Bound an oversized response before it hits the frame limit (issue
+        # #24, repro C): truncate the largest field(s) + attach truncation
+        # metadata so an executed op is never lost to a 1009 "message too big".
+        if isinstance(response, dict):
+            response, _ = bound_response(response)
         await ws.send(json.dumps(response, default=str))
 
     async def _handle_binary_frame(
