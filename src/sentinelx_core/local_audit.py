@@ -91,12 +91,28 @@ SKIP_OPS = frozenset({"read_audit", "ping"})
 
 
 def record(op: str, payload: dict[str, Any], ok: bool,
-           error: str | None = None, duration_ms: int | None = None) -> None:
-    """Append one entry to the local audit log. Best-effort; never raises."""
+           error: str | None = None, duration_ms: int | None = None,
+           result_ok: bool | None = None,
+           result_returncode: int | None = None) -> None:
+    """Append one entry to the local audit log. Best-effort; never raises.
+
+    `ok` keeps its historical meaning: the handler completed without raising
+    (dispatch-level success). It is NOT the outcome of whatever the handler
+    ran. An op like script_run reports a failed child as a normal nested
+    result — {"ok": false, "returncode": 7} — so an audit that only carried
+    `ok` showed a failed script as ok=true with nothing to say otherwise
+    (issue #30).
+
+    `result_ok` / `result_returncode` carry that nested outcome when the
+    handler's result has one. Both are optional and omitted when absent, so
+    entries written before this existed stay valid and readers that ignore
+    the fields keep working. Only these two scalars are lifted — never
+    stdout, stderr or any other result body.
+    """
     if op in SKIP_OPS:
         return
     try:
-        entry = {
+        entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
             "op": op,
             "payload": payload,
@@ -104,6 +120,10 @@ def record(op: str, payload: dict[str, Any], ok: bool,
             "error": error,
             "duration_ms": duration_ms,
         }
+        if result_ok is not None:
+            entry["result_ok"] = bool(result_ok)
+        if result_returncode is not None:
+            entry["result_returncode"] = int(result_returncode)
         line = json.dumps(entry, ensure_ascii=False, default=str)
 
         AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)

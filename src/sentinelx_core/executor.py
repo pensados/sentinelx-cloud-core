@@ -25,6 +25,33 @@ logger = logging.getLogger(__name__)
 Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+def _nested_outcome(result: Any) -> tuple[bool | None, int | None]:
+    """Lift a handler result's OWN outcome, when it reports one.
+
+    Dispatch-level success ("the handler returned") is not the same thing as
+    the outcome of what the handler ran. `script_run` reports a failed child
+    as a perfectly normal result — {"ok": false, "returncode": 7} — so an
+    audit that recorded only dispatch success showed a failed script as
+    ok=true with nothing to contradict it (issue #30).
+
+    Exactly two scalars are lifted, and only when present and of the right
+    type: nothing here reaches into stdout, stderr or any other body. A bool
+    is not accepted as a returncode (in Python it would pass an int check).
+    """
+    if not isinstance(result, dict):
+        return None, None
+
+    nested_ok = result.get("ok")
+    if not isinstance(nested_ok, bool):
+        nested_ok = None
+
+    returncode = result.get("returncode")
+    if isinstance(returncode, bool) or not isinstance(returncode, int):
+        returncode = None
+
+    return nested_ok, returncode
+
+
 class Executor:
     def __init__(self, config_path: Path) -> None:
         self._config_path = config_path
@@ -130,8 +157,10 @@ class Executor:
             start = time.perf_counter()
             result = await handler(request.payload)
             duration_ms = int((time.perf_counter() - start) * 1000)
+            nested_ok, nested_returncode = _nested_outcome(result)
             local_audit.record(
-                request.op, request.payload, ok=True, duration_ms=duration_ms
+                request.op, request.payload, ok=True, duration_ms=duration_ms,
+                result_ok=nested_ok, result_returncode=nested_returncode,
             )
             return {
                 "type": "response",
