@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,30 @@ MAX_LINES = 5000
 # whole file on every single append once it's full. Amortizes the trim cost.
 TRIM_TRIGGER = MAX_LINES + 500
 
+# How often the retention CHECK itself runs. Counting the log's lines means
+# reading the whole file, and 5000 retained rows of full payloads is several
+# megabytes — paid on every single audited op if checked every time (issue
+# #31). Instead the count is taken on the first audited write after process
+# start (so an oversized log left behind by an earlier run is repaired
+# promptly) and then once every RETENTION_CHECK_EVERY writes.
+#
+# Deliberately NOT a persisted line-count cache: re-reading the real file is
+# what keeps us tolerant of external rotation or truncation. The existing
+# TRIM_TRIGGER hysteresis is unchanged; this cadence only adds a bounded
+# overshoot of at most RETENTION_CHECK_EVERY - 1 further rows.
+RETENTION_CHECK_EVERY = 100
+
+# Block size for reading the log's tail backwards. One block covers a typical
+# read_audit(limit=50) comfortably; a single record larger than a block is
+# handled by reading further blocks, never by truncating the record.
+_TAIL_BLOCK_SIZE = 64 * 1024
+
+# Guarded because record() can be called from more than one thread (handlers
+# now run in the default executor).
+_retention_lock = threading.Lock()
+_writes_since_check = 0
+_checked_this_process = False
+
 # Ops we never record, to avoid noise / recursion. read_audit reads this very
 # log; auditing the read would grow the log every time someone views it.
 SKIP_OPS = frozenset({"read_audit", "ping"})
@@ -85,9 +110,41 @@ def record(op: str, payload: dict[str, Any], ok: bool,
         with AUDIT_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-        _maybe_trim()
+        if _should_check_retention():
+            _maybe_trim()
     except Exception as exc:  # never let auditing break the op
         logger.warning("local_audit_write_failed: %s", exc)
+
+
+def _should_check_retention() -> bool:
+    """True on this process's first audited write and every
+    RETENTION_CHECK_EVERY writes after that.
+
+    The append itself is O(1); it was the retention CHECK that read the
+    whole log on every op (issue #31). Keeping the cadence in memory —
+    rather than caching a line count on disk — means every check still
+    measures the real file, so external rotation or truncation is picked
+    up at the next check instead of being masked by a stale cache.
+    """
+    global _writes_since_check, _checked_this_process
+    with _retention_lock:
+        if not _checked_this_process:
+            _checked_this_process = True
+            _writes_since_check = 0
+            return True
+        _writes_since_check += 1
+        if _writes_since_check >= RETENTION_CHECK_EVERY:
+            _writes_since_check = 0
+            return True
+        return False
+
+
+def _reset_retention_state() -> None:
+    """Forget the cadence, as if the process had just started. Test-only."""
+    global _writes_since_check, _checked_this_process
+    with _retention_lock:
+        _writes_since_check = 0
+        _checked_this_process = False
 
 
 def _maybe_trim() -> None:
@@ -122,28 +179,55 @@ def _maybe_trim() -> None:
         logger.warning("local_audit_trim_failed: %s", exc)
 
 
+def _read_tail_lines(path: Path, limit: int) -> list[bytes]:
+    """Return at most the last `limit` physical lines of `path`, oldest first.
+
+    Reads backwards from EOF in _TAIL_BLOCK_SIZE blocks and stops as soon as
+    enough newlines have been seen, so a 50-entry request touches kilobytes
+    instead of the whole retained log (issue #31). A record longer than one
+    block simply costs another block — records are never split.
+    """
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        buf = b""
+        # `<= limit` rather than `< limit`: the log normally ends with a
+        # newline, so N complete lines carry N newlines and the first one
+        # seen going backwards closes the newest line rather than opening it.
+        while pos > 0 and buf.count(b"\n") <= limit:
+            step = min(_TAIL_BLOCK_SIZE, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + buf
+
+    return buf.splitlines()[-limit:]
+
+
 def read_recent(limit: int = 200) -> list[dict[str, Any]]:
     """Return the most recent `limit` entries, newest first. Best-effort:
-    returns whatever parses; a malformed line is skipped, not fatal."""
+    returns whatever parses; a malformed line is skipped, not fatal.
+
+    Only the newest `limit` PHYSICAL lines are ever inspected. A malformed
+    line among them is skipped and NOT backfilled from further back in the
+    log — the caller asked for the last N rows, not for N parseable rows.
+    That is the historical behaviour, kept deliberately.
+    """
     limit = max(1, min(int(limit), MAX_LINES))
     try:
         if not AUDIT_PATH.exists():
             return []
-        with AUDIT_PATH.open("r", encoding="utf-8") as f:
-            lines = f.readlines()
+        tail = _read_tail_lines(AUDIT_PATH, limit)
     except Exception as exc:
         logger.warning("local_audit_read_failed: %s", exc)
         return []
 
-    # Take the tail, parse, return newest-first.
-    tail = lines[-limit:]
     out: list[dict[str, Any]] = []
     for raw in reversed(tail):
-        raw = raw.strip()
-        if not raw:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
             continue
         try:
-            out.append(json.loads(raw))
+            out.append(json.loads(line))
         except (json.JSONDecodeError, TypeError):
             continue
     return out

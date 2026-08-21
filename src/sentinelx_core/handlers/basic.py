@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import platform
 import socket
 from collections.abc import Callable, Iterable
@@ -38,7 +39,10 @@ def make_read_audit_handler():
             limit = int(limit)
         except (TypeError, ValueError):
             limit = 200
-        entries = local_audit.read_recent(limit=limit)
+        # Disk read off the event loop: read_recent now reads only the tail,
+        # but it is still blocking I/O and the control plane should not wait
+        # on a slow disk for it (issue #31).
+        entries = await asyncio.to_thread(local_audit.read_recent, limit=limit)
         return {
             "entries": entries,
             "count": len(entries),
