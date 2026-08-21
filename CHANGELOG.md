@@ -3,6 +3,45 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.4 — Fix #27: `max_bytes` is a hard ceiling and `view_range` reaches the file — 2026-08-21
+
+Two correctness defects in `read`, both from the same coupling: the 8 KiB
+binary probe was also the buffer returned as content, and `view_range`
+was applied to that buffer afterwards.
+
+So `max_bytes: 257` on a 14,000-byte file returned 8192 bytes — about 32x
+the requested ceiling — and `view_range: [900, 905]` in a 122 KiB file
+could not be reached at all, because the range was applied to the 64 KiB
+response prefix rather than to the file. The prefix's line count was
+reported as though it were the file's total.
+
+Three concerns are now separate. The probe classifies (BOM/binary) and
+may read up to 8 KiB however small `max_bytes` is, but that buffer is
+never handed back. Returned content obeys `max_bytes`, enforced on the
+output in UTF-8 bytes — which also closes the case where UTF-16 source
+expands when re-encoded. And a ranged read streams the file through an
+incremental decoder in 64 KiB blocks, so it can reach line 900 of a
+multi-gigabyte log without materializing it.
+
+Ranged scanning stops one line past a finite range: that lookahead is
+exactly enough to know the file continues, and it avoids scanning the
+remainder of a huge log purely to produce a total. On a 23.84 MiB /
+250,000-line file, `[10, 20]` takes 0.25 ms against 44.55 ms for a scan
+to EOF, returning identical requested content. When the scan stops that
+way, `total_lines` is a lower bound and the new additive
+`total_lines_exact: false` says so; `[start, -1]` scans to EOF and
+reports an exact total while the content stays byte bounded.
+
+One deliberate consistency change: `view_range` now uses the same
+definition of a line that `total_lines` always did — text terminated by a
+newline — where it previously used `str.splitlines()`, which also breaks
+on CR, vertical tab and the Unicode line/paragraph separators. A file
+with bare-CR line endings will range differently; in exchange the two
+counts no longer disagree with each other.
+
+Reported by @mcip3301. Additive response field only; no protocol change
+and no new tool. Suite 169 → 182 tests, all green.
+
 ## 0.11.3 — Fixes #25 and #31: blocking filesystem and audit I/O off the event loop — 2026-08-21
 
 Two fixes in the same family: work that scales with the filesystem was
