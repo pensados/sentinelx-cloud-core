@@ -14,6 +14,25 @@ Security model:
 - The script's content itself is NOT validated against the policy allowlist
   — the allowlist applies to `exec` only. `script_run` is a separate
   capability with its own scope, intentionally more powerful.
+
+Text integrity on Windows (issue #28)
+=====================================
+
+Unicode must survive `script_run` without the caller adding boilerplate,
+and Windows breaks that in three places, each handled at its own boundary:
+
+  - Python inherits the console's legacy code page for stdio and raises
+    UnicodeEncodeError on ordinary accented text -> PYTHONIOENCODING=utf-8
+    is set for the child (setdefault: an explicit value still wins).
+  - Windows PowerShell 5.1 reads a BOM-less .ps1 through the ANSI code
+    page, mojibaking non-ASCII literals before the script runs -> .ps1
+    files are written with a UTF-8 BOM on Windows.
+  - the same shell encodes REDIRECTED output in the console code page,
+    which we then decoded as UTF-8 -> captured bytes are decoded UTF-8
+    first and fall back to the host code page only when that fails.
+
+All three stay on the encoding boundary: invocation, argv, exit codes and
+the shared console code page are untouched.
 """
 
 from __future__ import annotations
@@ -39,6 +58,66 @@ TIMEOUT_MIN = 1
 # (nohup/systemd/screen) and poll for the result rather than block the caller.
 TIMEOUT_MAX = 600
 ALLOWED_INTERPRETERS = ("bash", "python3", "powershell", "pwsh")
+
+# Interpreters whose script file is a .ps1.
+_POWERSHELL_INTERPRETERS = ("powershell", "pwsh")
+
+
+def _windows_legacy_encoding() -> str | None:
+    """The code page a Windows child most likely encoded its output in.
+
+    Windows PowerShell 5.1 encodes redirected output using
+    [Console]::OutputEncoding, which comes from the console output code page
+    (or the ANSI one when no console is attached) — not UTF-8. Ask Windows
+    directly; fall back to the locale's preferred encoding if that fails.
+    Returns None when nothing usable can be determined, and never raises.
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        cp = kernel32.GetConsoleOutputCP() or kernel32.GetACP()
+        if cp:
+            return f"cp{cp}"
+    except Exception:
+        pass
+    try:
+        import locale
+
+        return locale.getpreferredencoding(False) or None
+    except Exception:
+        return None
+
+
+def _decode_output(raw: bytes) -> str:
+    """Decode a child's captured bytes to text (issue #28).
+
+    Everywhere except Windows this is what it always was: UTF-8 with
+    replacement. On Windows a child may legitimately emit legacy-code-page
+    bytes — Windows PowerShell 5.1 does exactly that for redirected output —
+    and decoding those as UTF-8 produced mojibake.
+
+    So on Windows: try UTF-8 strictly first, because a child that emits
+    UTF-8 (most of them, and every child once PYTHONIOENCODING is set) must
+    be decoded as UTF-8. Only when that fails do we fall back to the host's
+    code page, and only then to replacement. Accented Latin-1/1252 bytes are
+    not valid UTF-8, so the fallback fires exactly where it should. This
+    touches no invocation, argument or exit-code semantics: it is a decision
+    about bytes we already captured.
+    """
+    if sys.platform != "win32":
+        return raw.decode(errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    legacy = _windows_legacy_encoding()
+    if legacy:
+        try:
+            return raw.decode(legacy)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return raw.decode("utf-8", errors="replace")
 
 
 def make_script_run_handler(policy: Policy, upload_base: Path):
@@ -110,7 +189,17 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
         script_path = workdir / safe_name
 
         try:
-            script_path.write_text(content, encoding="utf-8")
+            # Windows PowerShell 5.1 reads a BOM-less .ps1 through the legacy
+            # ANSI code page, so a script with non-ASCII literals is mojibaked
+            # before it ever runs (issue #28). A UTF-8 BOM is the documented
+            # way to tell it otherwise, and PowerShell Core reads it happily
+            # too. Everywhere else the file stays plain UTF-8.
+            script_encoding = (
+                "utf-8-sig"
+                if sys.platform == "win32" and interpreter in _POWERSHELL_INTERPRETERS
+                else "utf-8"
+            )
+            script_path.write_text(content, encoding=script_encoding)
             script_path.chmod(0o700)
 
             argv: list[str] = []
@@ -147,6 +236,13 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
 
             full_env = os.environ.copy()
             full_env.update(env_extra)
+            if interpreter == "python3" and sys.platform == "win32":
+                # Without this, Python inherits the console's legacy code page
+                # for stdio and raises UnicodeEncodeError the moment a script
+                # prints ordinary accented text or an emoji (issue #28).
+                # setdefault, so an explicit caller value — or one the
+                # operator set for the service — stays authoritative.
+                full_env.setdefault("PYTHONIOENCODING", "utf-8")
 
             start = time.time()
             try:
@@ -161,8 +257,8 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     proc.communicate(), timeout=timeout
                 )
                 returncode = proc.returncode
-                stdout = stdout_b.decode(errors="replace").strip()
-                stderr = stderr_b.decode(errors="replace").strip()
+                stdout = _decode_output(stdout_b).strip()
+                stderr = _decode_output(stderr_b).strip()
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
