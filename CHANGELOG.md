@@ -3,6 +3,46 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.6 — Fix #28: `script_run` round-trips Unicode on Windows — 2026-08-21
+
+Three Windows boundaries broke ordinary text under one user-facing
+contract. Each is now handled where it belongs, and none of them touches
+invocation, arguments, exit codes or the shared console code page.
+
+`python3` inherited the console's legacy stdio encoding and raised
+`UnicodeEncodeError` the moment a script printed accented text or an
+emoji. The child now gets `PYTHONIOENCODING=utf-8`, via `setdefault` so
+an explicit caller value — or one the operator set for the service —
+stays authoritative.
+
+Windows PowerShell 5.1 reads a BOM-less `.ps1` through the ANSI code
+page, mojibaking non-ASCII literals before the script even runs. `.ps1`
+files are now written with a UTF-8 BOM on Windows; PowerShell Core reads
+that happily too, and nothing changes off Windows.
+
+The same shell encodes *redirected* output in the console code page,
+while we decoded captured bytes as UTF-8. On Windows the bytes are now
+decoded as UTF-8 strictly first, falling back to the host's code page
+(`GetConsoleOutputCP`, then `GetACP`, then the locale) and finally to
+replacement. Accented Latin-1/1252 bytes are not valid UTF-8, so the
+fallback fires exactly where it should, and a child that emits UTF-8 is
+never re-read as a code page.
+
+Deliberate deviation on that third point: the report suggests a
+PowerShell bootstrap that sets the process encoding and then invokes the
+user script. That changes how every `.ps1` is invoked, and a wrapper
+cannot reproduce `-File` exit semantics for one of the cases the report
+itself lists as a constraint — after `& $script`, an explicit `exit 7`
+and a merely-handled native failure both leave 7 in `$LASTEXITCODE`, so
+the wrapper must either lose the explicit exit or turn a handled failure
+into one. Decoding on our side fixes the same corruption without taking
+that risk. The question is open with the reporter.
+
+Reported by @mcip3301. The Windows-only paths are covered by structural
+regressions (argv, child environment, bytes on disk) rather than live
+execution, because no Windows host is connected — issue #28 stays open
+until it runs on a real 5.1 host. Suite 189 → 201 tests, all green.
+
 ## 0.11.5 — Fix #30: a failed `script_run` child is visible in the local audit — 2026-08-21
 
 `Executor.dispatch` recorded `ok=true` whenever a handler returned
