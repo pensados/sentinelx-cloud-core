@@ -16,6 +16,19 @@ The CLI now installs a non-throwing UTF-8 text layer on stdout and
 stderr before parsing arguments, and rendering the result can no
 longer turn a committed edit into a reported failure.
 
+Trade-off, deliberate: forcing the stream to UTF-8 guarantees that
+rendering never raises, but it does not guarantee that the output
+*renders* legibly everywhere — on a genuine cp1252 console the UTF-8
+bytes appear as mojibake, and `errors="backslashreplace"` almost never
+fires because UTF-8 can encode everything. That is the right call for
+the primary consumer: `handlers/edit.py` captures the CLI's stdout over
+a pipe and ships it across MCP, where UTF-8 is exactly what is wanted.
+Only a human running the CLI by hand in a legacy console sees the
+mojibake, and that beats an exception after the file has changed. The
+alternative — keeping the console's own encoding and setting only
+`errors="backslashreplace"` — would print readable ASCII escapes
+everywhere but lose correct rendering on UTF-8-capable terminals.
+
 Reported by @mcip3301.
 
 ## 0.11.0 — Response bounding (issue #24, repro C) — 2026-08-20
