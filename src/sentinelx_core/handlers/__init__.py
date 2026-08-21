@@ -77,10 +77,17 @@ def build_registry(
 
     upload_base = policy.upload_base
 
-    return {
+    # Populated from the completed registry below, so capabilities has the
+    # exact same operation set without a second hand-maintained name list.
+    ops_supported: list[str] = []
+    registry: dict[str, Handler] = {
         # Read-only / introspection
         "ping": handle_ping,
-        "capabilities": make_capabilities_handler(policy, config_path),
+        "capabilities": make_capabilities_handler(
+            policy,
+            config_path,
+            ops_supported=ops_supported,
+        ),
         "help": make_help_handler(policy),
         "state": handle_state,
 
@@ -133,3 +140,5 @@ def build_registry(
         "chmod": make_chmod_handler(policy),
         "chown": make_chown_handler(policy),
     }
+    ops_supported.extend(registry)
+    return registry

@@ -123,12 +123,10 @@ async def test_state_returns_host_info() -> None:
 
 @pytest.mark.asyncio
 async def test_ops_supported_matches_registry() -> None:
-    """`ops_supported` in capabilities is a hand-maintained list; it
-    MUST stay in sync with the actual op registry. This test is the
-    guard: it failed (and caught a real bug) when move/copy/delete/
-    chmod/chown were registered in build_registry but not added to the
-    capabilities list, so a client introspecting ops_supported
-    couldn't discover them. If you add an op, add it in BOTH places.
+    """Capabilities must advertise exactly the operations in the registry.
+
+    Registry membership is the source of truth: adding an operation must make
+    it discoverable without requiring a second hand-maintained name list.
     """
     handlers = build_registry(policy=Policy.empty())
     result = await handlers["capabilities"]({})
@@ -142,6 +140,28 @@ async def test_ops_supported_matches_registry() -> None:
     assert not phantom_in_caps, (
         f"ops advertised in capabilities but not registered: {sorted(phantom_in_caps)}"
     )
+    assert result["ops_supported"] == list(handlers), (
+        "ops_supported must preserve deterministic registry insertion order"
+    )
+
+    summary = await handlers["capabilities"]({"detail": "summary"})
+    assert summary["ops_supported"] == list(handlers), (
+        "summary capabilities must expose the same operation contract"
+    )
+
+
+@pytest.mark.asyncio
+async def test_capabilities_advertises_transfer_and_snapshot_ops() -> None:
+    """Regression for #32: newer registered ops remain discoverable."""
+    handlers = build_registry(policy=Policy.empty())
+    result = await handlers["capabilities"]({})
+    for op in (
+        "file_export_init",
+        "file_export_chunk",
+        "file_export_complete",
+        "project_snapshot",
+    ):
+        assert op in result["ops_supported"], f"{op!r} missing from ops_supported"
 
 
 @pytest.mark.asyncio

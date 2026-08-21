@@ -48,7 +48,12 @@ def make_read_audit_handler():
     return handle_read_audit
 
 
-def make_capabilities_handler(policy: Policy, config_path=None):
+def make_capabilities_handler(
+    policy: Policy,
+    config_path=None,
+    *,
+    ops_supported: list[str],
+):
     async def handle_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
         """Return the policy as introspection data + ops supported.
 
@@ -78,24 +83,11 @@ def make_capabilities_handler(policy: Policy, config_path=None):
                 "kernel": platform.release(),
                 "arch": platform.machine(),
             },
-            # NOTE: keep this list in sync with build_registry() in
-            # handlers/__init__.py. It is intentionally explicit (not
-            # derived from the registry) so capabilities output is
-            # stable and readable, but that means new ops must be
-            # added in BOTH places. The five mutating ops below were
-            # added with the unified r/rw file-ops model.
-            "ops_supported": [
-                "ping", "capabilities", "help", "state",
-                "exec", "service", "restart",
-                "script_run",
-                "edit", "edit_upload_init", "edit_upload_file", "edit_upload_complete",
-                "upload_file", "upload_init", "upload_chunk", "upload_complete",
-                "read", "list", "search",
-                "read_audit",
-                "move", "copy", "delete", "chmod", "chown",
-                # Structured Git ops (sentinel_git) — see handlers/git_ops.py.
-                "git",
-            ],
+            # Registry membership is the single source of truth for operation
+            # discoverability. Keep the registry's insertion order so the
+            # capabilities payload remains deterministic/readable without a
+            # second hand-maintained operation list that can drift.
+            "ops_supported": list(ops_supported),
             "allowed_commands": list(policy.allowed_commands),
             "services": {
                 name: {
