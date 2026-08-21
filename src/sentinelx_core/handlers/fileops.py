@@ -58,10 +58,29 @@ Error codes
   permission_denied   unix bits prevent reading
   too_many_results    only returned if EXPLICITLY requested (we prefer
                       to set truncated=true and return what we have)
+
+Concurrency — filesystem work never runs on the event loop
+==========================================================
+
+The three ops are exposed as async handlers, but the filesystem work
+itself is blocking: opening a file on a slow disk, enumerating a deep
+tree, or scanning a subtree for content takes as long as it takes. Run
+directly in the coroutine, that time is time the agent's event loop is
+NOT scheduling anything else — including the WebSocket control plane
+(issue #25).
+
+So each op is written as a plain synchronous `_*_blocking` function
+holding all of the policy, traversal and bounding logic, and the async
+handler is a thin wrapper that hands it to `asyncio.to_thread`. That is
+the default executor: a bounded, shared thread pool, so no dedicated
+thread is created per request. Semantics are unchanged — the same
+function body, the same HandlerError propagation, the same response
+shape — only the thread it runs on differs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import os
 import re
@@ -214,8 +233,8 @@ def _bom_encoding(data: bytes) -> str | None:
 def make_read_handler(policy: Policy):
     """Return an async handler for the `read` op bound to the policy."""
 
-    async def handle_read(payload: dict[str, Any]) -> dict[str, Any]:
-        """Read a file's contents.
+    def _read_blocking(payload: dict[str, Any]) -> dict[str, Any]:
+        """Read a file's contents. BLOCKING — runs in a worker thread.
 
         Payload:
           path:        str (required)
@@ -388,6 +407,17 @@ def make_read_handler(policy: Policy):
             result["view_range"] = used_range
         return result
 
+    async def handle_read(payload: dict[str, Any]) -> dict[str, Any]:
+        """Run the blocking read off the event loop (issue #25).
+
+        See _read_blocking for the payload and response contract. The
+        default executor is a bounded, shared pool, so a slow open/read
+        costs a worker thread rather than the agent's whole control
+        plane, and no per-request thread is created. HandlerError raised
+        in the worker propagates unchanged.
+        """
+        return await asyncio.to_thread(_read_blocking, payload)
+
     return handle_read
 
 
@@ -399,8 +429,8 @@ def make_read_handler(policy: Policy):
 def make_list_handler(policy: Policy):
     """Return an async handler for the `list` op bound to the policy."""
 
-    async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
-        """List directory contents.
+    def _list_blocking(payload: dict[str, Any]) -> dict[str, Any]:
+        """List directory contents. BLOCKING — runs in a worker thread.
 
         Payload:
           path:        str (required) — directory to list
@@ -521,6 +551,16 @@ def make_list_handler(policy: Policy):
             "truncated": truncated,
         }
 
+    async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
+        """Run the blocking enumeration off the event loop (issue #25).
+
+        See _list_blocking for the payload and response contract. A deep
+        or slow recursive walk now costs a worker thread from the default
+        bounded pool instead of stalling every other coroutine for the
+        duration of the traversal.
+        """
+        return await asyncio.to_thread(_list_blocking, payload)
+
     return handle_list
 
 
@@ -532,8 +572,8 @@ def make_list_handler(policy: Policy):
 def make_search_handler(policy: Policy):
     """Return an async handler for the `search` op bound to the policy."""
 
-    async def handle_search(payload: dict[str, Any]) -> dict[str, Any]:
-        """Recursive content search across an allowed subtree.
+    def _search_blocking(payload: dict[str, Any]) -> dict[str, Any]:
+        """Recursive content search. BLOCKING — runs in a worker thread.
 
         Payload:
           path:           str (required) — root of the search
@@ -699,5 +739,15 @@ def make_search_handler(policy: Policy):
             "files_searched": files_searched,
             "truncated": truncated,
         }
+
+    async def handle_search(payload: dict[str, Any]) -> dict[str, Any]:
+        """Run the blocking scan off the event loop (issue #25).
+
+        See _search_blocking for the payload and response contract. A
+        recursive content scan is the longest-running of the three ops,
+        so this is where loop monopolization hurt most; it now runs in
+        the default bounded executor.
+        """
+        return await asyncio.to_thread(_search_blocking, payload)
 
     return handle_search
