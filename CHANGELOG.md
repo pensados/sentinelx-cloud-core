@@ -3,6 +3,37 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.5 — Fix #30: a failed `script_run` child is visible in the local audit — 2026-08-21
+
+`Executor.dispatch` recorded `ok=true` whenever a handler returned
+normally, and `script_run` reports a failed child as a normal nested
+result — `{"ok": false, "returncode": 7}` — rather than raising. The
+caller correctly saw a failed script while `read_audit` showed the same
+operation as `ok=true`, with nothing to indicate the child had failed.
+
+Repaired additively. `ok` keeps its historical meaning — the handler
+completed, i.e. dispatch-level success — and is not redefined. The
+nested outcome travels in two new optional fields lifted from the
+handler result when it has them:
+
+```json
+{"op":"script_run","ok":true,"result_ok":false,"result_returncode":7}
+```
+
+Exactly two scalars are lifted, and only when present and correctly
+typed; nothing reaches into stdout, stderr or any other result body, so
+the audit's payload policy is unchanged. A bool is explicitly rejected
+as a return code, since in Python it would otherwise pass an int check.
+Both fields are omitted when absent, so entries written before this stay
+valid and readers that ignore them keep working.
+
+Three outcomes now have three shapes: dispatch failure (`ok=false` with
+an error), a failed child (`ok=true`, `result_ok=false`,
+`result_returncode=N`), and plain success (`ok=true`, `result_ok=true`).
+
+Reported by @mcip3301. No protocol change and no new tool. Suite 182 →
+189 tests, all green.
+
 ## 0.11.4 — Fix #27: `max_bytes` is a hard ceiling and `view_range` reaches the file — 2026-08-21
 
 Two correctness defects in `read`, both from the same coupling: the 8 KiB
