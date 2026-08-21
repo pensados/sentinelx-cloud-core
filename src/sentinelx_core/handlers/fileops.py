@@ -81,6 +81,7 @@ shape — only the thread it runs on differs.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import fnmatch
 import os
 import re
@@ -230,6 +231,113 @@ def _bom_encoding(data: bytes) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+# Block size for the streaming line scanner used by ranged reads. Big
+# enough that a range near the start of a huge file costs one or two
+# reads, small enough that nothing large is held in memory.
+_READ_BLOCK_BYTES = 64 * 1024
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _clip_utf8(text: str, max_bytes: int) -> str:
+    """Trim `text` to at most `max_bytes` UTF-8 bytes.
+
+    A multi-byte character straddling the boundary is dropped rather than
+    returned as a mangled fragment.
+    """
+    if max_bytes <= 0:
+        return ""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _count_lines(text: str) -> int:
+    return text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+
+
+def _iter_lines(f, encoding: str):
+    """Yield decoded lines from an open binary file, in bounded blocks.
+
+    A line is what ends in "\\n" — the same definition `total_lines` has
+    always used, applied now to `view_range` too. The file is never
+    materialized: scanning to line 900 of a multi-gigabyte log costs
+    blocks, not the file. An incremental decoder handles the BOM and, for
+    UTF-16, the endianness and code units split across block edges.
+    """
+    decoder = codecs.getincrementaldecoder(encoding)("replace")
+    buf = ""
+    while True:
+        chunk = f.read(_READ_BLOCK_BYTES)
+        if not chunk:
+            buf += decoder.decode(b"", final=True)
+            if buf:
+                yield buf
+            return
+        buf += decoder.decode(chunk)
+        if "\n" not in buf:
+            continue
+        parts = buf.split("\n")
+        buf = parts.pop()
+        for part in parts:
+            yield part + "\n"
+
+
+def _scan_range(f, encoding: str, cap: int, start: int, end: int):
+    """Stream `f` and collect lines [start, end], 1-indexed, end=-1 = EOF.
+
+    Returns (text, lines_seen, total_is_exact, truncated, last_line).
+
+    Two ceilings, deliberately independent (issue #27):
+
+      * returned content never exceeds `cap` UTF-8 bytes;
+      * a FINITE range stops one line past `end` — that lookahead is all
+        that is needed to know the file continues, and it avoids scanning
+        the remainder of a huge log purely to produce a total. When the
+        scan stops that way, lines_seen is a lower bound and
+        total_is_exact is False.
+
+    `end=-1` scans to EOF, so the total is exact; the content stays
+    bounded because collection stops once `cap` is reached while the
+    counting continues.
+    """
+    to_eof = end == -1
+    pieces: list[str] = []
+    used = 0
+    truncated = False
+    lines_seen = 0
+    last = start - 1
+    exact = True
+
+    for line in _iter_lines(f, encoding):
+        lines_seen += 1
+        if lines_seen < start:
+            continue
+        if not to_eof and lines_seen > end:
+            # The one-line lookahead: the file continues past the range.
+            exact = False
+            break
+        if truncated:
+            continue
+        room = cap - used
+        if _utf8_len(line) <= room:
+            pieces.append(line)
+            used += _utf8_len(line)
+            last = lines_seen
+        else:
+            clipped = _clip_utf8(line, room)
+            if clipped:
+                pieces.append(clipped)
+                used += _utf8_len(clipped)
+                last = lines_seen
+            truncated = True
+
+    return "".join(pieces), lines_seen, exact, truncated, last
+
+
 def make_read_handler(policy: Policy):
     """Return an async handler for the `read` op bound to the policy."""
 
@@ -240,25 +348,32 @@ def make_read_handler(policy: Policy):
           path:        str (required)
           view_range:  [int, int] optional (1-indexed, inclusive). Either
                        end can be -1 to mean "to the end of file". If
-                       omitted, the whole file is returned (subject to
-                       max_read_bytes truncation).
-          max_bytes:   int optional. Caps the response size at the
-                       handler level. Defaults to policy.file_ops_max_read_bytes.
-                       Cannot exceed the policy cap (we silently clamp).
+                       omitted, the file's prefix is returned (subject to
+                       max_bytes truncation).
+          max_bytes:   int optional. Hard ceiling on the returned content,
+                       in UTF-8 bytes. Defaults to
+                       policy.file_ops_max_read_bytes and is clamped to it.
 
         Returns:
           {
             "ok": true,
             "path": "<resolved-path>",
-            "encoding": "utf-8" | "binary",
+            "encoding": "utf-8" | "utf-16" | "binary",
             "content": "<file content as string>",
             "total_lines": N,            # only when text
+            "total_lines_exact": bool,   # false => N is a LOWER BOUND
             "lines_returned": N,         # only when text
             "view_range": [start, end],  # if view_range was used
             "size_bytes": N,
             "truncated": true|false,
             "modified_at": "<iso>",
           }
+
+        Three concerns kept separate (issue #27): the binary/BOM probe may
+        inspect up to _BINARY_PROBE_BYTES no matter how small max_bytes is,
+        but that buffer is never the returned content; the returned content
+        obeys max_bytes; and a ranged read may scan as far into the file as
+        the requested lines require without materializing it.
         """
         path_str = _require_str(payload, "path")
         resolved = _resolve_or_reject(policy, path_str)
@@ -298,14 +413,34 @@ def make_read_handler(policy: Policy):
         if isinstance(requested, int) and requested > 0:
             cap = min(cap, requested)
 
+        # Validated up front: a malformed range is the caller's mistake and
+        # should not depend on whether the file happens to be readable.
+        view_range = payload.get("view_range")
+        start = end = None
+        if view_range is not None:
+            if (
+                not isinstance(view_range, (list, tuple))
+                or len(view_range) != 2
+                or not all(isinstance(x, int) for x in view_range)
+            ):
+                raise HandlerError(
+                    "invalid_payload",
+                    "view_range must be a [start, end] pair of integers "
+                    "(1-indexed). Use -1 for end to mean 'to the end'.",
+                )
+            start = max(1, view_range[0])
+            end = view_range[1]
+
         size = st.st_size
         modified_at = time.strftime(
             "%Y-%m-%dT%H:%M:%S%z", time.gmtime(st.st_mtime)
         )
 
-        bom_enc = None
         try:
             with resolved.open("rb") as f:
+                # Classification probe. It may read up to 8KB even when the
+                # caller asked for less, because BOM/binary detection needs
+                # it — but this buffer is never handed back as content.
                 head = f.read(_BINARY_PROBE_BYTES)
                 bom_enc = _bom_encoding(head)
                 # A Unicode BOM means text even when UTF-16 trips the NUL
@@ -324,11 +459,34 @@ def make_read_handler(policy: Policy):
                         "truncated": True,
                     }
 
-                # Text path: read up to `cap` bytes total (we already have head).
-                rest = b""
-                if size > len(head) and cap > len(head):
-                    rest = f.read(cap - len(head))
-                data = head + rest
+                enc = bom_enc or "utf-8"
+                enc_label = "utf-16" if bom_enc == "utf-16" else "utf-8"
+
+                if view_range is None:
+                    # Prefix read. `cap` bounds the content, so a request
+                    # below the probe size is honoured by trimming the probe
+                    # buffer rather than returning all 8KB of it.
+                    if cap <= len(head):
+                        data = head[:cap]
+                    else:
+                        data = head + f.read(cap - len(head))
+                    text = data.decode(enc, errors="replace")
+                    # UTF-16 source can expand when re-encoded as UTF-8, so
+                    # enforce the ceiling on the OUTPUT as well.
+                    clipped = _clip_utf8(text, cap)
+                    truncated = size > len(data) or clipped != text
+                    text = clipped
+                    total_lines = _count_lines(text)
+                    total_exact = not truncated
+                    used_range = None
+                else:
+                    # The probe consumed the first bytes; the scanner needs
+                    # the file from the top (its decoder handles the BOM).
+                    f.seek(0)
+                    text, total_lines, total_exact, truncated, last = _scan_range(
+                        f, enc, cap, start, end
+                    )
+                    used_range = [start, last]
         except PermissionError as exc:
             raise HandlerError(
                 "permission_denied",
@@ -349,56 +507,14 @@ def make_read_handler(policy: Policy):
                 f"failed to read {path_str!r}: {exc}.",
             ) from exc
 
-        # Decode. A UTF-16/UTF-8-sig BOM (common on Windows) picks the codec;
-        # otherwise decode UTF-8, tolerating stray invalid bytes (CR-LF + smart
-        # quotes from Windows) with replacement rather than failing.
-        if bom_enc:
-            text = data.decode(bom_enc, errors="replace")
-            enc_label = "utf-16" if bom_enc == "utf-16" else "utf-8"
-        else:
-            text = data.decode("utf-8", errors="replace")
-            enc_label = "utf-8"
-        truncated = size > len(data)
-
-        # Optional view_range. We do this AFTER reading because computing
-        # line offsets requires seeing the content.
-        view_range = payload.get("view_range")
-        used_range = None
-        if view_range is not None:
-            if (
-                not isinstance(view_range, (list, tuple))
-                or len(view_range) != 2
-                or not all(isinstance(x, int) for x in view_range)
-            ):
-                raise HandlerError(
-                    "invalid_payload",
-                    "view_range must be a [start, end] pair of integers "
-                    "(1-indexed). Use -1 for end to mean 'to the end'.",
-                )
-            start, end = view_range
-            lines = text.splitlines(keepends=True)
-            total_lines = len(lines)
-            # 1-indexed → 0-indexed slice
-            s = max(1, start) - 1
-            e = total_lines if end == -1 else min(end, total_lines)
-            text = "".join(lines[s:e])
-            used_range = [s + 1, e]
-        else:
-            total_lines = text.count("\n") + (
-                1 if text and not text.endswith("\n") else 0
-            )
-
-        lines_returned = text.count("\n") + (
-            1 if text and not text.endswith("\n") else 0
-        )
-
         result: dict[str, Any] = {
             "ok": True,
             "path": str(resolved),
             "encoding": enc_label,
             "content": text,
             "total_lines": total_lines,
-            "lines_returned": lines_returned,
+            "total_lines_exact": total_exact,
+            "lines_returned": _count_lines(text),
             "size_bytes": size,
             "truncated": truncated,
             "modified_at": modified_at,
