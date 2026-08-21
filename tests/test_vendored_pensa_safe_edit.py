@@ -15,10 +15,13 @@ Everything runs against tmp_path — never a real file.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from sentinelx_core.vendored import pensa_safe_edit
 from sentinelx_core.vendored.pensa_safe_edit import (
     EditSpec,
     SafeEditError,
@@ -26,6 +29,7 @@ from sentinelx_core.vendored.pensa_safe_edit import (
     build_validator,
     build_validator_preset,
     copy_metadata,
+    main,
 )
 
 
@@ -222,3 +226,100 @@ def test_apply_edit_surfaces_chown_skip(
     assert res.ok is True  # the edit still succeeds
     assert res.chown_skipped is True  # but the skip is visible
     assert f.read_text() == "b"
+
+
+# --- 5. Issue #26: rendering must never report failure after the commit ------
+
+
+def _run_cli(
+    args: list[str], encoding: str | None = None
+) -> subprocess.CompletedProcess:
+    """Invoke the CLI in a child process so the real stdout encoding
+    applies — the bug only reproduces on a genuine text stream."""
+    env = dict(os.environ)
+    env.pop("PYTHONIOENCODING", None)
+    if encoding is not None:
+        env["PYTHONIOENCODING"] = encoding
+    return subprocess.run(
+        [
+            sys.executable, "-m",
+            "sentinelx_core.vendored.pensa_safe_edit", *args,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_unicode_diff_on_legacy_console_encoding_succeeds(
+    tmp_path: Path,
+) -> None:
+    """Issue #26: apply_edit() commits BEFORE the diff is rendered. On a
+    console that cannot encode the diff (Windows cp1252), the render used
+    to raise and the CLI exited nonzero — reporting failure AFTER the
+    state had already changed, so a retried append duplicated it.
+
+    The CLI must now exit 0 and leave exactly one append on disk."""
+    f = tmp_path / "f.txt"
+    f.write_text("BASE\n", encoding="utf-8")
+
+    proc = _run_cli(
+        [str(f), "--mode", "append", "--new", "APPEND \U0001F680", "--diff"],
+        encoding="cp1252:strict",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "UnicodeEncodeError" not in proc.stderr
+    assert "OK: edited" in proc.stdout
+    assert f.read_text(encoding="utf-8").count("APPEND ") == 1
+
+
+def test_unicode_diff_still_renders_the_diff(tmp_path: Path) -> None:
+    """The fix must not silence the diff — it is rendered, with the
+    unrepresentable characters escaped rather than raising."""
+    f = tmp_path / "f.txt"
+    f.write_text("BASE\n", encoding="utf-8")
+
+    proc = _run_cli(
+        [str(f), "--mode", "append", "--new", "APPEND \U0001F680", "--diff"],
+        encoding="cp1252:strict",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "+APPEND " in proc.stdout
+
+
+def test_render_failure_cannot_fail_a_committed_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt and braces: even if rendering blows up for some other
+    reason, the edit is already on disk, so main() must still report
+    success."""
+    f = tmp_path / "f.txt"
+    f.write_text("BASE\n", encoding="utf-8")
+
+    def boom(_result):
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr(pensa_safe_edit, "_render_result", boom)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["pensa-safe-edit", str(f), "--mode", "append", "--new", "X"],
+    )
+
+    assert main() == 0
+    assert f.read_text(encoding="utf-8").rstrip().endswith("X")
+
+
+def test_genuine_failure_still_exits_nonzero(tmp_path: Path) -> None:
+    """Negative control: the fix must not turn real errors into
+    successes."""
+    proc = _run_cli(
+        [
+            str(tmp_path / "missing.txt"), "--mode", "replace",
+            "--old", "a", "--new", "b",
+        ],
+    )
+
+    assert proc.returncode != 0
+    assert "target_not_found" in proc.stderr

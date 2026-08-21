@@ -719,6 +719,20 @@ def _spec_from_args(args: argparse.Namespace) -> EditSpec:
 
 
 def main() -> int:
+    # Issue #26: apply_edit() COMMITS before the result is rendered, and
+    # the rendered diff can carry characters the console encoding cannot
+    # represent (Windows cp1252). A raising print would therefore report
+    # failure AFTER the state changed, and a retried non-idempotent
+    # append would duplicate the mutation. Force a non-throwing UTF-8
+    # text layer up front. Harmless on Linux/macOS.
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is not None:
+            try:
+                _reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
     parser = argparse.ArgumentParser(
         description="Safe atomic file editing (API-first, no shell)"
     )
@@ -796,7 +810,18 @@ def main() -> int:
         eprint(f"ERROR[{exc.code}]: {exc.message}")
         return _EXIT_FOR_CODE.get(exc.code, 1)
 
-    _render_result(result)
+    # Issue #26 (belt and braces): the edit is already committed at this
+    # point, so no rendering problem may be reported as a failed edit.
+    try:
+        _render_result(result)
+    except Exception:  # noqa: BLE001 - never fail after the commit
+        try:
+            eprint(
+                "WARNING: rendering the result failed; "
+                "the edit WAS applied"
+            )
+        except Exception:  # noqa: BLE001
+            pass
     return 0
 
 

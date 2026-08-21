@@ -3,6 +3,21 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.1 — Fix #26: safe-edit renders Unicode diffs without reporting failure after commit — 2026-08-21
+
+`sentinelx-pensa-safe-edit` committed the mutation and could then
+exit nonzero while rendering the diff, when the console encoding
+could not represent the diff's characters (Windows cp1252). The
+caller saw a failure AFTER the state had already changed, and
+retrying a non-idempotent edit (`append`, `prepend`) duplicated the
+mutation.
+
+The CLI now installs a non-throwing UTF-8 text layer on stdout and
+stderr before parsing arguments, and rendering the result can no
+longer turn a committed edit into a reported failure.
+
+Reported by @mcip3301.
+
 ## 0.11.0 — Response bounding (issue #24, repro C) — 2026-08-20
 
 Outbound sends are now bounded before they hit the WebSocket frame limit.
