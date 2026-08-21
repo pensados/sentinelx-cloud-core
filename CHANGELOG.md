@@ -3,6 +3,28 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.2 — Fix #32: `capabilities.ops_supported` is derived from the op registry — 2026-08-21
+
+`ops_supported` was a hand-maintained literal in the capabilities
+handler and had drifted from `build_registry()`: `file_export_init`,
+`file_export_chunk`, `file_export_complete` and `project_snapshot`
+were registered and dispatchable but never advertised, so a client
+introspecting capabilities could not discover them (and hub-side
+capability-aware dispatch was weakened). The guard test
+`test_ops_supported_matches_registry` had been failing on `main`.
+
+The list is now derived from the registry itself: `build_registry()`
+attaches the capabilities handler after the dict is complete and
+injects a callable that reads the registry's keys at request time, so
+the advertised ops are always exactly the dispatchable ops, sorted. A
+newly registered op needs no second edit. This is the second time the
+hand-maintained list drifted (the first was move/copy/delete/chmod/
+chown), which is why the fix removes the class of bug rather than the
+instance. The guard test stays, now guarding the derivation.
+
+No protocol change and no new tool: the response shape is unchanged,
+four op names simply appear where they should always have been.
+
 ## 0.11.1 — Fix #26: safe-edit renders Unicode diffs without reporting failure after commit — 2026-08-21
 
 `sentinelx-pensa-safe-edit` committed the mutation and could then

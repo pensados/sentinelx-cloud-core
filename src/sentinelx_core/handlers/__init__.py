@@ -77,10 +77,12 @@ def build_registry(
 
     upload_base = policy.upload_base
 
-    return {
+    registry: dict[str, Handler] = {
         # Read-only / introspection
         "ping": handle_ping,
-        "capabilities": make_capabilities_handler(policy, config_path),
+        # "capabilities" is attached after this dict is built, so it can
+        # close over the finished registry and derive ops_supported from
+        # it (see the end of this function).
         "help": make_help_handler(policy),
         "state": handle_state,
 
@@ -133,3 +135,16 @@ def build_registry(
         "chmod": make_chmod_handler(policy),
         "chown": make_chown_handler(policy),
     }
+
+    # The registry is the single source of truth for what this agent can
+    # dispatch, so capabilities.ops_supported is DERIVED from it rather than
+    # hand-maintained. The lambda is evaluated at request time, when the dict
+    # (including "capabilities" itself) is complete. Hand-maintaining it
+    # drifted twice -- move/copy/delete/chmod/chown, then file_export_* and
+    # project_snapshot (issue #32) -- so a new op is now advertised the
+    # moment it is registered here, and nothing else needs touching.
+    registry["capabilities"] = make_capabilities_handler(
+        policy, config_path, ops_supported=lambda: registry.keys()
+    )
+
+    return registry

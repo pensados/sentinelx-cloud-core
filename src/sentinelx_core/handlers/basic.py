@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import socket
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,7 +49,23 @@ def make_read_audit_handler():
     return handle_read_audit
 
 
-def make_capabilities_handler(policy: Policy, config_path=None):
+def make_capabilities_handler(
+    policy: Policy,
+    config_path=None,
+    ops_supported: Callable[[], Iterable[str]] | None = None,
+):
+    """Build the `capabilities` handler.
+
+    `ops_supported` is a callable returning the canonical op names. It is
+    injected by build_registry() so the advertised list is DERIVED from the
+    registry instead of hand-maintained (it drifted twice: once for
+    move/copy/delete/chmod/chown, once for file_export_*/project_snapshot --
+    see issue #32). It is called lazily, at request time, because the
+    registry is not yet fully populated when this handler is constructed.
+    Built standalone (outside build_registry) the handler advertises an
+    empty list: capabilities is only meaningful wired to a registry.
+    """
+
     async def handle_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
         """Return the policy as introspection data + ops supported.
 
@@ -78,24 +95,13 @@ def make_capabilities_handler(policy: Policy, config_path=None):
                 "kernel": platform.release(),
                 "arch": platform.machine(),
             },
-            # NOTE: keep this list in sync with build_registry() in
-            # handlers/__init__.py. It is intentionally explicit (not
-            # derived from the registry) so capabilities output is
-            # stable and readable, but that means new ops must be
-            # added in BOTH places. The five mutating ops below were
-            # added with the unified r/rw file-ops model.
-            "ops_supported": [
-                "ping", "capabilities", "help", "state",
-                "exec", "service", "restart",
-                "script_run",
-                "edit", "edit_upload_init", "edit_upload_file", "edit_upload_complete",
-                "upload_file", "upload_init", "upload_chunk", "upload_complete",
-                "read", "list", "search",
-                "read_audit",
-                "move", "copy", "delete", "chmod", "chown",
-                # Structured Git ops (sentinel_git) — see handlers/git_ops.py.
-                "git",
-            ],
+            # DERIVED from build_registry() in handlers/__init__.py --
+            # never hand-maintained. The registry's keys are the single
+            # source of truth for what this agent can dispatch, so an op
+            # that is registered is automatically advertised (and one
+            # that is removed automatically disappears). Sorted for a
+            # stable, readable, diff-friendly response.
+            "ops_supported": sorted(ops_supported()) if ops_supported else [],
             "allowed_commands": list(policy.allowed_commands),
             "services": {
                 name: {

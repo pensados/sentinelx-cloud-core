@@ -123,12 +123,16 @@ async def test_state_returns_host_info() -> None:
 
 @pytest.mark.asyncio
 async def test_ops_supported_matches_registry() -> None:
-    """`ops_supported` in capabilities is a hand-maintained list; it
-    MUST stay in sync with the actual op registry. This test is the
-    guard: it failed (and caught a real bug) when move/copy/delete/
-    chmod/chown were registered in build_registry but not added to the
-    capabilities list, so a client introspecting ops_supported
-    couldn't discover them. If you add an op, add it in BOTH places.
+    """`ops_supported` in capabilities MUST equal the actual op registry.
+
+    It used to be a hand-maintained literal and drifted twice: first when
+    move/copy/delete/chmod/chown were registered but not advertised, then
+    when file_export_init/chunk/complete + project_snapshot were (issue
+    #32) -- in both cases a client introspecting ops_supported could not
+    discover dispatchable ops. Since #32 the list is DERIVED from the
+    registry inside build_registry(), so this test now guards the
+    derivation itself: if someone reverts to a hand-maintained list, or
+    the injection is dropped (ops_supported falls back to []), this fails.
     """
     handlers = build_registry(policy=Policy.empty())
     result = await handlers["capabilities"]({})
