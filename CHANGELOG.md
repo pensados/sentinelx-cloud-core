@@ -3,6 +3,50 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.3 — Fixes #25 and #31: blocking filesystem and audit I/O off the event loop — 2026-08-21
+
+Two fixes in the same family: work that scales with the filesystem was
+being done where the agent could least afford it.
+
+**#25 — `read` / `list` / `search` no longer monopolize the loop.** The
+three ops were async handlers doing synchronous filesystem work, so a
+slow open, a deep enumeration or a recursive content scan held the
+event loop for its whole duration — and with it the WebSocket control
+plane. Each op is now a plain synchronous `_*_blocking` function that
+the async handler hands to `asyncio.to_thread` (the default bounded
+pool; no per-request threads). Policy checks, canonical path
+resolution, symlink-escape protection, binary handling, glob/regex
+semantics, result ceilings and response shape are all untouched — the
+operations take exactly as long as before, they just no longer take the
+loop with them. A 250 ms injected filesystem delay used to stall an
+independent 10 ms ticker for ~260 ms; it now stays under 100 ms.
+
+**#31 — local audit I/O is bounded on both ends.** Every audited op
+appended one row and then rescanned the whole JSONL log to count lines
+for retention, and `read_audit(limit=N)` loaded the entire file before
+slicing the tail, synchronously on the loop. Since the audit keeps full
+payloads, that is megabytes per operation. Retention is now checked on
+the first write after process start and every 100 writes thereafter,
+and the tail is read backwards from EOF in 64 KiB blocks, through the
+default executor.
+
+Deliberate trade-offs in #31: the retention cadence is kept in memory
+rather than cached to disk, so every check still measures the real file
+and external rotation or truncation is picked up at the next check
+instead of being masked by stale state; the cost is a bounded overshoot
+of at most 99 rows beyond the existing hysteresis. And the tail read
+keeps the historical read semantics exactly — only the newest N
+physical lines are inspected, and a malformed line among them is
+skipped rather than backfilled from further back, because the caller
+asked for the last N rows, not for N parseable rows.
+
+Measured on orion against a 5.93 MiB / 5000-row log: 100 audited writes
+420.5 ms → 8.2 ms; `read_recent(50)` 22.6 ms / 6.22 MiB peak → 0.95 ms
+/ 0.14 MiB peak.
+
+Both reported by @mcip3301. No protocol change and no new tool. Suite
+155 → 169 tests, all green.
+
 ## 0.11.2 — Fix #32: `capabilities.ops_supported` is derived from the op registry — 2026-08-21
 
 `ops_supported` was a hand-maintained literal in the capabilities
