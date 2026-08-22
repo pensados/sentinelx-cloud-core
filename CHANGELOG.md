@@ -3,6 +3,37 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.7 — Fix #29: `search` streams candidate files instead of loading them whole — 2026-08-22
+
+`search` read each accepted text file completely before looking at it —
+the probe bytes, the rest, the concatenation, the decoded text and the
+split line list, all alive at once. On a 19.51 MiB / 220,000-line file
+that cost **88.19 MiB** of peak traced allocation to find nothing, and
+scans over a large allowed workspace root are routine, not hypothetical.
+
+Files are now streamed a block at a time: the binary probe is unchanged,
+the file is rewound, and lines are yielded one at a time through an
+incremental decoder. Peak allocation on the same fixture drops to
+**0.34 MiB** — bounded by one block plus at most one in-progress line.
+
+Line breaking deliberately matches `str.splitlines()`, which is what the
+whole-file path used, so line **numbering is identical for every file**:
+CRLF, bare CR, form feed and the Unicode separators all still start a new
+line. This is intentionally *not* the newline-only iterator that ranged
+reads use (#27) — there, agreeing with `total_lines` mattered more; here,
+not renumbering anyone's search results does. A block boundary landing
+inside a `\r\n` holds the `\r` back rather than emitting it, so it cannot
+be mistaken for a lone CR and split one line into two.
+
+Traversal order, matcher semantics, globs, previews, the result cap,
+`files_searched` and binary handling are untouched. Wall time is
+unchanged: 98 ms vs 97 ms median over five warm runs (a single
+cold-cache run was 617 ms vs 665 ms), against the ~11% regression the
+report measured.
+
+Reported by @mcip3301. No protocol change and no new tool. Suite 201 →
+211 tests, all green.
+
 ## 0.11.6 — Fix #28: `script_run` round-trips Unicode on Windows — 2026-08-21
 
 Three Windows boundaries broke ordinary text under one user-facing
