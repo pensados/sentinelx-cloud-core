@@ -286,6 +286,61 @@ def _iter_lines(f, encoding: str):
             yield part + "\n"
 
 
+def _strip_break(piece: str) -> str:
+    """A line without its terminator, using str.splitlines' own notion of one."""
+    parts = piece.splitlines()
+    return parts[0] if parts else ""
+
+
+def _iter_search_lines(f):
+    """Yield a text file's lines, without terminators, in bounded blocks.
+
+    `search` used to read each candidate file whole -- probe bytes, the
+    rest, the concatenation, the decoded text and the split line list, all
+    live at once, which is how a 20 MiB file cost ~90 MiB of peak
+    allocation (issue #29). This holds one block plus at most one
+    in-progress line.
+
+    Line breaking deliberately matches `str.splitlines()`, which is what
+    the whole-file path used: every break it recognises (CRLF, CR, LF,
+    form feed, the Unicode separators) still starts a new line, so line
+    NUMBERING is unchanged for every file. That is why this is not the
+    newline-only `_iter_lines` used by ranged reads -- there, matching
+    `total_lines` mattered more; here, not renumbering anyone's search
+    results does.
+
+    The one subtlety is a block boundary landing inside a "\\r\\n": a
+    trailing "\\r" is held back rather than emitted, so it cannot be
+    mistaken for a lone CR and split one line into two.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    buf = ""
+    while True:
+        chunk = f.read(_READ_BLOCK_BYTES)
+        final = not chunk
+        buf += decoder.decode(chunk or b"", final=final)
+
+        pieces = buf.splitlines(keepends=True)
+        if final:
+            for piece in pieces:
+                yield _strip_break(piece)
+            return
+        if not pieces:
+            continue
+
+        tail = pieces.pop()
+        if tail.endswith("\r") or _strip_break(tail) == tail:
+            # An unterminated fragment, or a CR that may still turn out to
+            # be the first half of a CRLF: wait for more bytes.
+            buf = tail
+        else:
+            pieces.append(tail)
+            buf = ""
+
+        for piece in pieces:
+            yield _strip_break(piece)
+
+
 def _scan_range(f, encoding: str, cap: int, start: int, end: int):
     """Stream `f` and collect lines [start, end], 1-indexed, end=-1 = EOF.
 
@@ -803,42 +858,48 @@ def make_search_handler(policy: Policy):
                 if p.suffix in _SEARCH_SKIP_FILES:
                     return False
 
-                # Read + check binary.
+                # Probe for binary, then STREAM the file. The probe is
+                # unchanged; what changed is that the file is no longer
+                # slurped whole (head + rest + decoded text + line list all
+                # alive at once) just to look at one line at a time — see
+                # issue #29 and _iter_search_lines.
                 try:
                     with p.open("rb") as f:
                         head = f.read(_BINARY_PROBE_BYTES)
                         if _looks_binary(head):
                             return False
-                        # Read the rest (text files only).
-                        rest = f.read()
-                    blob = head + rest
+                        # The probe consumed the first bytes; the line
+                        # scanner needs the file from the top.
+                        f.seek(0)
+                        files_searched += 1
+
+                        for lineno, line in enumerate(
+                            _iter_search_lines(f), start=1
+                        ):
+                            m = matcher(line)
+                            if m is None:
+                                continue
+                            rel = (
+                                str(p.relative_to(resolved))
+                                if p != resolved
+                                else p.name
+                            )
+                            preview = line.strip()
+                            if len(preview) > _SEARCH_LINE_PREVIEW_CHARS:
+                                preview = (
+                                    preview[:_SEARCH_LINE_PREVIEW_CHARS] + "…"
+                                )
+                            matches.append({
+                                "file": rel,
+                                "line": lineno,
+                                "column": m.start() + 1,
+                                "text": preview,
+                            })
+                            if len(matches) >= cap:
+                                truncated = True
+                                return True
                 except (PermissionError, OSError):
                     return False
-
-                text = blob.decode("utf-8", errors="replace")
-                files_searched += 1
-
-                for lineno, line in enumerate(text.splitlines(), start=1):
-                    m = matcher(line)
-                    if m is None:
-                        continue
-                    rel = (
-                        str(p.relative_to(resolved))
-                        if p != resolved
-                        else p.name
-                    )
-                    preview = line.strip()
-                    if len(preview) > _SEARCH_LINE_PREVIEW_CHARS:
-                        preview = preview[:_SEARCH_LINE_PREVIEW_CHARS] + "…"
-                    matches.append({
-                        "file": rel,
-                        "line": lineno,
-                        "column": m.start() + 1,
-                        "text": preview,
-                    })
-                    if len(matches) >= cap:
-                        truncated = True
-                        return True
                 return False
             except Exception:
                 # Defensive — never let a single weird file kill the whole
