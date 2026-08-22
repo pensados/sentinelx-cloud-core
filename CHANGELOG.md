@@ -3,6 +3,54 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.8 — Fix #28 completed: PowerShell output encoding fixed in the child — 2026-08-22
+
+0.11.6 fixed the Windows PowerShell *source* encoding (a UTF-8 BOM) and
+then tried to undo the *output* corruption on our side. With a real
+Windows 11 / PowerShell 5.1 host finally connected, that half turned out
+to be insufficient: 5.1 encodes redirected output in the console code
+page (437 on this host), where anything outside it is destroyed at the
+source. `Write-Output 'ñandú — 汉'` came back as bytes decoding to
+`ñandú - ?` — the em dash best-fitted to a hyphen, the CJK character
+replaced by a question mark, before we ever saw them. No capture-side
+decoding brings those back; the reporter was right that it has to be
+fixed in the child.
+
+The reason 0.11.6 avoided their bootstrap was exit-code fidelity, and
+that concern was real. Measured on the same host:
+
+| invocation | explicit `exit 7` | handled native 7 | `throw` |
+|---|---:|---:|---:|
+| `-File` (reference) | 7 | 0 | 1 |
+| bootstrap + `& $script` | 7 | **7** | 1 |
+| bootstrap + inner `-File` | 7 | 0 | 1 |
+
+So Windows PowerShell now runs through a bootstrap that sets the
+process's output encoding to UTF-8 and invokes the user's script as an
+**inner** `powershell -File`. The inner process is a native command, so
+its exit code is unambiguous and `-File` semantics survive exactly.
+
+Two consequences worth naming. The bootstrap sets a console code page,
+and measurement showed that landing on the console the agent inherits —
+leaking 65001 into every later child. Windows children are therefore
+spawned with `CREATE_NO_WINDOW`, giving each its own console: the change
+dies with the child, the workstation's code page is untouched (verified:
+437 before and after), and the mechanism no longer depends on inheriting
+a console, which is what makes it work under a service. And because the
+bootstrap adds an inner process, a timed-out script would have left it
+orphaned — the timeout path now kills the tree with `taskkill`, falling
+back to `kill()`.
+
+`pwsh` keeps the direct path; PowerShell Core already speaks UTF-8. The
+capture-side decode stays as a safety net for children that still emit
+legacy bytes.
+
+Verified by loading this exact module on the Windows host and driving the
+handler: PowerShell round-trips `ñandú — 汉 🚀` exactly; exit codes match
+`-File` in all four cases; args with spaces and `;`/`|` survive with
+`using namespace` intact; `python3` round-trips the same string; a
+caller-pinned `PYTHONIOENCODING` still wins. Suite 211 → 214 tests.
+
 ## 0.11.7 — Fix #29: `search` streams candidate files instead of loading them whole — 2026-08-22
 
 `search` read each accepted text file completely before looking at it —
