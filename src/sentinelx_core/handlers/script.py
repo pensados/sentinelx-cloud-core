@@ -28,18 +28,27 @@ and Windows breaks that in three places, each handled at its own boundary:
     page, mojibaking non-ASCII literals before the script runs -> .ps1
     files are written with a UTF-8 BOM on Windows.
   - the same shell encodes REDIRECTED output in the console code page,
-    which we then decoded as UTF-8 -> captured bytes are decoded UTF-8
-    first and fall back to the host code page only when that fails.
+    destroying anything outside it before we ever see the bytes -> the
+    user's script runs through a UTF-8 bootstrap (see
+    _POWERSHELL_BOOTSTRAP), in a child console of its own.
 
-All three stay on the encoding boundary: invocation, argv, exit codes and
-the shared console code page are untouched.
+As a safety net, captured bytes are decoded as UTF-8 first and fall back
+to the host's code page only when that fails, which covers children that
+still emit legacy bytes (a caller who pins a legacy PYTHONIOENCODING, a
+bash port, pwsh on an exotic host).
+
+Argv, exit-code semantics, the user's script text and the workstation's
+console code page are all left exactly as they were — each verified on a
+real Windows PowerShell 5.1 host.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -49,6 +58,8 @@ from typing import Any
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
+
+logger = logging.getLogger(__name__)
 
 # Hard limits, mirror legacy behavior
 TIMEOUT_MIN = 1
@@ -61,6 +72,45 @@ ALLOWED_INTERPRETERS = ("bash", "python3", "powershell", "pwsh")
 
 # Interpreters whose script file is a .ps1.
 _POWERSHELL_INTERPRETERS = ("powershell", "pwsh")
+
+# Windows: give the child its own (windowless) console. Two reasons, both
+# measured on a real 5.1 host: the encoding bootstrap below sets a console
+# code page, and without this flag that lands on the console the agent
+# itself inherits — leaking 65001 into every later child. With it, the
+# change dies with the child and the agent's console keeps its own code
+# page. It also guarantees the child HAS a console, which is what makes
+# the bootstrap work at all when the agent runs as a service.
+_CREATE_NO_WINDOW = 0x08000000
+
+# Windows PowerShell 5.1 encodes redirected output in the console code page
+# (cp437 on a default es/en install), so anything outside it is destroyed at
+# the source: an em dash became "-" and a CJK character became "?" before
+# the bytes ever reached us. No amount of decoding on our side brings those
+# back, so the encoding has to be fixed IN the child (issue #28).
+#
+# The bootstrap sets the process's output encoding to UTF-8 and then runs
+# the user's script as an INNER `powershell -File`. That indirection is the
+# whole point: a wrapper that merely called `& $script` would collapse two
+# different outcomes, because after it an explicit `exit 7` and a handled
+# native failure both leave 7 in $LASTEXITCODE. Measured on 5.1:
+#
+#   invocation            explicit exit 7   handled native 7   throw
+#   -File (reference)            7                 0             1
+#   bootstrap + & $script        7                 7  <-- wrong  1
+#   bootstrap + inner -File      7                 0             1
+#
+# The inner process is a native command, so its exit code is unambiguous and
+# `-File` semantics survive intact — as do argv, `using namespace`, and the
+# user's script text, which is never prefixed with anything.
+_POWERSHELL_BOOTSTRAP = (
+    "param([Parameter(Mandatory=$true)][string]$SentinelXScript,"
+    "[Parameter(ValueFromRemainingArguments=$true)]$SentinelXArgs)\n"
+    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n"
+    "$OutputEncoding = [Console]::OutputEncoding\n"
+    "& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+    "-File $SentinelXScript @SentinelXArgs\n"
+    "exit $LASTEXITCODE\n"
+)
 
 
 def _windows_legacy_encoding() -> str | None:
@@ -87,6 +137,30 @@ def _windows_legacy_encoding() -> str | None:
         return locale.getpreferredencoding(False) or None
     except Exception:
         return None
+
+
+def _kill_process_tree(proc) -> None:
+    """Kill a timed-out child, and on Windows its children too.
+
+    The PowerShell bootstrap runs the user's script as an inner process, so
+    killing only the process we spawned would leave that inner one running
+    after a timeout. taskkill /T covers the tree; if it is unavailable we
+    still kill what we spawned rather than nothing.
+    """
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+            )
+            return
+        except Exception:
+            logger.warning("taskkill failed; falling back to kill()", exc_info=True)
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
 
 
 def _decode_output(raw: bytes) -> str:
@@ -228,10 +302,27 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                 exe = shutil.which(interpreter) or (
                     "pwsh" if interpreter == "pwsh" else "powershell"
                 )
-                argv.extend(
-                    [exe, "-NoProfile", "-NonInteractive",
-                     "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
-                )
+                target = str(script_path)
+                if sys.platform == "win32" and interpreter == "powershell":
+                    # Windows PowerShell 5.1 only: run the user's script
+                    # through the UTF-8 bootstrap (see above). pwsh already
+                    # speaks UTF-8 and is left on the direct path, which
+                    # also spares it the extra process.
+                    bootstrap = workdir / "sentinelx_bootstrap.ps1"
+                    bootstrap.write_text(
+                        _POWERSHELL_BOOTSTRAP, encoding="utf-8-sig"
+                    )
+                    target = str(bootstrap)
+                    argv.extend(
+                        [exe, "-NoProfile", "-NonInteractive",
+                         "-ExecutionPolicy", "Bypass", "-File", target,
+                         str(script_path)]
+                    )
+                else:
+                    argv.extend(
+                        [exe, "-NoProfile", "-NonInteractive",
+                         "-ExecutionPolicy", "Bypass", "-File", target]
+                    )
             argv.extend(args)
 
             full_env = os.environ.copy()
@@ -244,6 +335,10 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                 # operator set for the service — stays authoritative.
                 full_env.setdefault("PYTHONIOENCODING", "utf-8")
 
+            spawn_kwargs: dict[str, Any] = {}
+            if sys.platform == "win32":
+                spawn_kwargs["creationflags"] = _CREATE_NO_WINDOW
+
             start = time.time()
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -252,6 +347,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
                     env=full_env,
+                    **spawn_kwargs,
                 )
                 stdout_b, stderr_b = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
@@ -260,7 +356,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                 stdout = _decode_output(stdout_b).strip()
                 stderr = _decode_output(stderr_b).strip()
             except asyncio.TimeoutError:
-                proc.kill()
+                _kill_process_tree(proc)
                 await proc.wait()
                 return {
                     "ok": False,

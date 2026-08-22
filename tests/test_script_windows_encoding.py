@@ -145,11 +145,14 @@ async def test_windows_powershell_script_is_written_with_a_bom(
 
 
 @pytest.mark.asyncio
-async def test_windows_powershell_invocation_is_unchanged(
+async def test_windows_powershell_runs_through_the_utf8_bootstrap(
     policy, spawned, monkeypatch
 ):
-    """Acceptance #4: argv and script context stay exactly as they were —
-    the file is still passed with -File, with the user's args after it."""
+    """5.1 encodes redirected output in the console code page, so the fix has
+    to reach the child. The bootstrap runs the user's script as an inner
+    `-File`, which is what keeps exit-code semantics (measured on 5.1:
+    `& $script` turns a handled native failure into a failure; an inner
+    -File does not)."""
     _as_windows(monkeypatch)
     handlers = build_registry(policy=policy)
 
@@ -165,13 +168,63 @@ async def test_windows_powershell_invocation_is_unchanged(
     argv = spawned[0]["argv"]
     assert argv[1:5] == ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
     assert argv[5] == "-File"
-    assert argv[6] == result["script_path"]
-    assert argv[7:] == ["arg with spaces", "a;b|c"]
-    # The user's text is passed through verbatim: no prologue, so
-    # `using namespace` stays the first statement of the script.
+    bootstrap = Path(argv[6])
+    assert bootstrap.name == "sentinelx_bootstrap.ps1"
+    assert bootstrap.parent == Path(result["workdir"])
+    # The user's script is the bootstrap's first argument, the caller's args
+    # follow it untouched.
+    assert argv[7] == result["script_path"]
+    assert argv[8:] == ["arg with spaces", "a;b|c"]
+
+    body = bootstrap.read_text(encoding="utf-8-sig")
+    assert "[Console]::OutputEncoding" in body
+    assert "-File $SentinelXScript @SentinelXArgs" in body
+    assert body.rstrip().endswith("exit $LASTEXITCODE")
+
+    # The user's text is written verbatim: no prologue, so `using namespace`
+    # stays the first statement of their script.
     assert Path(result["script_path"]).read_text(encoding="utf-8-sig").startswith(
         "using namespace"
     )
+
+
+@pytest.mark.asyncio
+async def test_windows_children_get_their_own_console(policy, spawned, monkeypatch):
+    """Acceptance #5. Measured: without this flag the bootstrap's code-page
+    change lands on the console the agent inherits and leaks 65001 into
+    every later child."""
+    _as_windows(monkeypatch)
+    handlers = build_registry(policy=policy)
+
+    await handlers["script_run"](
+        {"interpreter": "powershell", "content": "Write-Output 'x'"}
+    )
+
+    assert spawned[0]["creationflags"] == script_mod._CREATE_NO_WINDOW
+
+
+@pytest.mark.asyncio
+async def test_pwsh_is_left_on_the_direct_path(policy, spawned, monkeypatch):
+    """PowerShell Core already speaks UTF-8; no bootstrap, no extra process."""
+    _as_windows(monkeypatch)
+    handlers = build_registry(policy=policy)
+
+    result = await handlers["script_run"](
+        {"interpreter": "pwsh", "content": "Write-Output 'x'", "cleanup": False}
+    )
+
+    argv = spawned[0]["argv"]
+    assert argv[5] == "-File"
+    assert argv[6] == result["script_path"]
+
+
+@pytest.mark.asyncio
+async def test_non_windows_spawn_is_unchanged(policy, spawned):
+    handlers = build_registry(policy=policy)
+
+    await handlers["script_run"]({"interpreter": "bash", "content": "echo hi"})
+
+    assert "creationflags" not in spawned[0]
 
 
 @pytest.mark.asyncio
