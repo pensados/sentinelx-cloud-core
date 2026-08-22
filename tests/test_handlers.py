@@ -146,6 +146,17 @@ async def test_ops_supported_matches_registry() -> None:
     assert not phantom_in_caps, (
         f"ops advertised in capabilities but not registered: {sorted(phantom_in_caps)}"
     )
+    # Cherry-picked from FalconZip's PR #33 (converged on the same #32 fix).
+    # Their PR asserted registry INSERTION order; our derivation sorts the ops
+    # alphabetically (also deterministic, more diff-friendly), so we guard our
+    # deterministic order here, and check the summary path exposes the same set.
+    assert result["ops_supported"] == sorted(handlers), (
+        "ops_supported must be the full registry in a deterministic (sorted) order"
+    )
+    summary = await handlers["capabilities"]({"detail": "summary"})
+    assert set(summary["ops_supported"]) == set(handlers), (
+        "summary capabilities must expose the same operation contract"
+    )
 
 
 @pytest.mark.asyncio
@@ -415,3 +426,18 @@ async def test_capabilities_default_stays_full_for_compatibility() -> None:
     assert result["allowed_commands"] == ["ls"]
     assert "file_ops" in result
     assert "introspection" not in result
+
+
+@pytest.mark.asyncio
+async def test_capabilities_advertises_transfer_and_snapshot_ops() -> None:
+    """Regression for #32 (cherry-picked from PR #33): the file_export_* and
+    project_snapshot ops registered later stay discoverable via capabilities."""
+    handlers = build_registry(policy=Policy.empty())
+    result = await handlers["capabilities"]({})
+    for op in (
+        "file_export_init",
+        "file_export_chunk",
+        "file_export_complete",
+        "project_snapshot",
+    ):
+        assert op in result["ops_supported"], f"{op!r} missing from ops_supported"
