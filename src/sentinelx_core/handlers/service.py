@@ -77,6 +77,19 @@ _WIN_RESTART_DETACHED = (
     "| Select-Object -ExpandProperty ProcessId"
 )
 
+# Hardened self-restart (issue #19). net stop can leave the old Python child tree
+# orphaned on some installs (LocalService / during an update), producing a
+# duplicate_session split-brain. taskkill /F /T on the LIVE WinSW wrapper PID kills
+# the whole service-owned tree atomically before it can orphan, then a fresh
+# generation starts. The wrapper PID is resolved in Python and injected as a literal
+# so the CommandLine stays single-quoted with no inner double quotes.
+_WIN_RESTART_DETACHED_TREEKILL = (
+    "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+    "@{{ CommandLine = 'cmd /c timeout /t 2 /nobreak >nul & taskkill /F /T /PID {pid} "
+    "& timeout /t 2 /nobreak >nul & net start {name}' }} "
+    "| Select-Object -ExpandProperty ProcessId"
+)
+
 # Windows Scheduled-Task backend (the no-admin user-mode install): the agent
 # runs as a per-user Scheduled Task instead of an SCM service, so map actions to
 # schtasks (no admin needed to control your own task).
@@ -139,6 +152,52 @@ def _build_service_cmd(action: str, spec) -> str:
     return _build_systemctl(action, spec.unit, spec.requires_sudo)
 
 
+async def _windows_service_restart(name: str) -> dict[str, Any]:
+    """Hardened Windows SCM self-restart (issue #19).
+
+    Resolves the WinSW wrapper PID and force-kills the whole service-owned process
+    tree (taskkill /F /T) before starting a fresh generation, so the old Python
+    agent tree cannot survive and cause a duplicate_session split-brain. Returns a
+    structured restart_started ack (never "completed"); the caller must verify the
+    new PID/version after reconnect.
+    """
+    wrapper_pid: int | None = None
+    try:
+        # `sc` is a PowerShell alias for Set-Content -> use sc.exe explicitly.
+        q = await run_shell_split(f"sc.exe queryex {name}", timeout=10.0)
+        for line in (q.get("stdout") or "").splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("PID") and ":" in stripped:
+                wrapper_pid = int(stripped.split(":", 1)[1].strip())
+                break
+    except Exception:
+        wrapper_pid = None
+
+    if wrapper_pid:
+        cmd = _WIN_RESTART_DETACHED_TREEKILL.format(pid=wrapper_pid, name=name)
+    else:
+        # Fallback: graceful stop/start if we could not resolve the wrapper PID.
+        cmd = _WIN_RESTART_DETACHED.format(name=name)
+
+    launch = await run_shell_split(cmd, timeout=30.0)
+    return {
+        "ok": True,
+        "status": "restart_started",
+        "expected_disconnect": True,
+        "verification_required": True,
+        "method": "taskkill_tree" if wrapper_pid else "net_stop_start",
+        "wrapper_pid": wrapper_pid,
+        "detail": (
+            "Windows service restart launched (detached). The whole service-owned "
+            "process tree is force-terminated, then a fresh generation starts. The "
+            "agent connection will drop and reconnect on the new generation -- this "
+            "is expected, not a failure. Confirm with the capabilities op and verify "
+            "the new PID/version once it responds."
+        ),
+        "helper": launch,
+    }
+
+
 def make_service_handler(policy: Policy):
     """Return an async handler bound to the given policy."""
 
@@ -178,6 +237,10 @@ def make_service_handler(policy: Policy):
                 "Or use one of the already-allowed actions listed above.",
                 details={"allowed_actions": list(spec.actions)},
             )
+
+        backend = getattr(spec, "backend", "service")
+        if action in ("restart", "reload") and sys.platform == "win32" and backend == "service":
+            return await _windows_service_restart(spec.unit)
 
         cmd = _build_service_cmd(action, spec)
         return await run_shell_split(cmd, timeout=30.0)

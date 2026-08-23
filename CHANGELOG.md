@@ -3,6 +3,15 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.9
+
+- Windows self-restart hardening (#19): the SCM/WinSW restart now force-terminates the
+  whole service-owned process tree (`taskkill /F /T` on the resolved wrapper PID) before
+  starting a fresh generation, instead of relying on `net stop` -- which on some installs
+  (LocalService / during an update) could leave the old Python agent tree orphaned and
+  cause a duplicate_session split-brain. The restart op now returns a structured
+  `restart_started` ack (never "completed") with `expected_disconnect`/`verification_required`.
+
 ## 0.11.8 — Fix #28 completed: PowerShell output encoding fixed in the child — 2026-08-22
 
 0.11.6 fixed the Windows PowerShell *source* encoding (a UTF-8 BOM) and
