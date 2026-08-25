@@ -78,10 +78,14 @@ def build_registry(
     # Make platform guidance backend-aware (issue #7): a per-user Scheduled Task
     # install (backend=task) must be described as a task, not a WinSW service, so
     # the restart op / log paths / host wording the agent emits are correct. The
-    # agent's own service entry is keyed by platform_guidance.SERVICE_KEY.
+    # agent's own service entry is keyed by platform_guidance.SERVICE_KEY. We also
+    # pin the guidance's config path to the agent's ACTUAL --config file, so a
+    # per-user install points the operator at %LOCALAPPDATA%\SentinelX (its only
+    # rw config) rather than the C:\ProgramData service default.
     from sentinelx_core import platform_guidance as _pg
     _self_svc = policy.services.get(_pg.SERVICE_KEY)
     _pg.set_backend(getattr(_self_svc, "backend", "service") if _self_svc else "service")
+    _pg.set_config_path(config_path)
 
     upload_base = policy.upload_base
 

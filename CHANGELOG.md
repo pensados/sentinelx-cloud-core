@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.11 — Backend-aware config path in guidance (#7 follow-up) — 2026-08-25
+
+- Guidance now points the operator at the agent's ACTUAL config file. 0.11.10 made the
+  restart command, log paths and host wording backend-aware, but `edit_config_via()` still
+  used the platform default (`C:\ProgramData\SentinelX\config.yaml`). On a per-user
+  (`-User` / Scheduled Task) Windows install the policy lives under
+  `%LOCALAPPDATA%\SentinelX\config.yaml` — the agent's only writable config — so following
+  the old guidance would hit `path_not_allowed`. The agent now pins the guidance config
+  path to its real `--config` argument at startup (`set_config_path`, wired in
+  `build_registry`), matching what `capabilities.locations.config` already reports. No
+  change for the default service install, whose `--config` is the ProgramData path.
+
 ## 0.11.10 — Windows non-SYSTEM hardening: LocalService restart (#19), user-mode task restart (#4), backend-aware guidance (#7) — 2026-08-25
 
 - Windows SCM self-restart, LocalService case (#19, follow-up to 0.11.9). 0.11.9's

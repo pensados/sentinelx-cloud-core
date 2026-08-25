@@ -135,3 +135,16 @@ def set_backend(backend: str) -> None:
             _WIN_SVC_LOGS_HINT,
             _WIN_SVC_HOST_KIND,
         )
+
+
+
+def set_config_path(path) -> None:
+    """Record the agent's ACTUAL config path (its --config arg) so guidance that
+    points the operator at the policy file uses the real path, not the platform
+    default -- a per-user (-User / task) Windows install keeps its config under
+    %LOCALAPPDATA%\\SentinelX, not C:\\ProgramData. Called once at startup from
+    build_registry(). No-op if path is falsy (keep the platform default), so a
+    policy built without a config_path (e.g. tests) is unaffected."""
+    global CONFIG_PATH
+    if path:
+        CONFIG_PATH = str(path)
