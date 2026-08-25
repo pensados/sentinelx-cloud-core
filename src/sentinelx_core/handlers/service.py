@@ -11,6 +11,8 @@ provides. This decoupling lets you alias `core` -> `sentinelx-core.service`.
 
 from __future__ import annotations
 
+import os
+import re
 import sys
 from typing import Any
 
@@ -152,14 +154,76 @@ def _build_service_cmd(action: str, spec) -> str:
     return _build_systemctl(action, spec.unit, spec.requires_sudo)
 
 
+# SCM-recovery self-kill (issue #19, underprivileged / LocalService case). On a
+# LocalService (or other non-SYSTEM) install, a detached WMI helper inherits the
+# same underprivileged token, so its `net start` is DENIED (System error 5) and
+# 0.11.9 would kill the tree with no way to bring it back. Instead the helper does
+# ONLY a forced tree-kill of the WinSW wrapper; the service's SCM RESTART failure
+# action then restarts it under the SCM's own privilege. We REQUIRE an SCM RESTART
+# recovery action to exist (verified before launch) and otherwise fail closed.
+_WIN_RESTART_DETACHED_TREEKILL_ONLY = (
+    "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+    "@{{ CommandLine = 'cmd /c timeout /t 2 /nobreak >nul & taskkill /F /T /PID {pid}' }} "
+    "| Select-Object -ExpandProperty ProcessId"
+)
+
+
+def _win_is_system_account(account: str | None) -> bool:
+    """True if a service's SERVICE_START_NAME denotes LocalSystem (SYSTEM) -- the
+    one privileged case where a detached helper can `net start` the service itself.
+    Everything else (LocalService, NetworkService, a normal user) is underprivileged."""
+    if not account:
+        return False
+    a = account.strip().lower()
+    if a in ("localsystem", ".\\localsystem", "s-1-5-18"):
+        return True
+    # "NT AUTHORITY\\System" and any domain-qualified \System.
+    return a.endswith("\\system")
+
+
+async def _win_service_account(name: str) -> str | None:
+    """Resolve the service's SERVICE_START_NAME via `sc.exe qc` (e.g. 'LocalSystem',
+    'NT AUTHORITY\\LocalService'). None if it can't be resolved."""
+    try:
+        qc = await run_shell_split(f"sc.exe qc {name}", timeout=10.0)
+        for line in (qc.get("stdout") or "").splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("SERVICE_START_NAME") and ":" in stripped:
+                return stripped.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+async def _win_has_scm_restart_recovery(name: str) -> bool:
+    """True if `sc.exe qfailure` lists at least one RESTART failure action, i.e. the
+    SCM will restart the service on its own after we force-kill the tree."""
+    try:
+        qf = await run_shell_split(f"sc.exe qfailure {name}", timeout=10.0)
+        return re.search(r"\bRESTART\b", qf.get("stdout") or "", re.IGNORECASE) is not None
+    except Exception:
+        return False
+
+
 async def _windows_service_restart(name: str) -> dict[str, Any]:
     """Hardened Windows SCM self-restart (issue #19).
 
-    Resolves the WinSW wrapper PID and force-kills the whole service-owned process
-    tree (taskkill /F /T) before starting a fresh generation, so the old Python
-    agent tree cannot survive and cause a duplicate_session split-brain. Returns a
-    structured restart_started ack (never "completed"); the caller must verify the
-    new PID/version after reconnect.
+    Two paths, chosen by the service account:
+
+    * SYSTEM (LocalSystem): force-kill the whole service-owned process tree
+      (taskkill /F /T) and `net start` a fresh generation from the detached helper
+      -- the helper inherits SYSTEM so the start succeeds (method=taskkill_tree).
+
+    * Underprivileged (LocalService / NetworkService / user): a detached helper
+      inherits the same token and its `net start` is DENIED (System error 5), so we
+      do NOT start from the helper. We force-kill the tree ONLY and let the
+      service's SCM RESTART failure action restart it under the SCM's privilege
+      (method=scm_recovery_self_kill). This REQUIRES an SCM RESTART recovery action
+      -- if none exists we FAIL CLOSED and kill nothing, because a self-restart
+      would otherwise leave the service down with no way back.
+
+    Returns a structured restart_started ack (never "completed"); the caller must
+    verify the new PID/version/single-tree after reconnect.
     """
     wrapper_pid: int | None = None
     try:
@@ -173,25 +237,128 @@ async def _windows_service_restart(name: str) -> dict[str, Any]:
     except Exception:
         wrapper_pid = None
 
-    if wrapper_pid:
-        cmd = _WIN_RESTART_DETACHED_TREEKILL.format(pid=wrapper_pid, name=name)
-    else:
-        # Fallback: graceful stop/start if we could not resolve the wrapper PID.
-        cmd = _WIN_RESTART_DETACHED.format(name=name)
+    account = await _win_service_account(name)
+    privileged = _win_is_system_account(account)
 
+    # --- SYSTEM path: unchanged 0.11.9 behaviour (the helper can net start) ---
+    if privileged:
+        if wrapper_pid:
+            cmd = _WIN_RESTART_DETACHED_TREEKILL.format(pid=wrapper_pid, name=name)
+            method = "taskkill_tree"
+        else:
+            # Fallback: graceful stop/start if we could not resolve the wrapper PID.
+            cmd = _WIN_RESTART_DETACHED.format(name=name)
+            method = "net_stop_start"
+        launch = await run_shell_split(cmd, timeout=30.0)
+        return {
+            "ok": True,
+            "status": "restart_started",
+            "expected_disconnect": True,
+            "verification_required": True,
+            "method": method,
+            "wrapper_pid": wrapper_pid,
+            "service_account": account,
+            "detail": (
+                "Windows service restart launched (detached, SYSTEM). The whole "
+                "service-owned process tree is force-terminated, then a fresh "
+                "generation starts. The agent connection will drop and reconnect on "
+                "the new generation -- this is expected, not a failure. Confirm with "
+                "the capabilities op and verify the new PID/version once it responds."
+            ),
+            "helper": launch,
+        }
+
+    # --- Underprivileged path: rely on SCM recovery, fail closed without it ---
+    has_recovery = await _win_has_scm_restart_recovery(name)
+    if not has_recovery:
+        raise HandlerError(
+            "service_restart_unsafe",
+            f"service '{name}' runs as {account or 'a non-SYSTEM account'} and has no "
+            "SCM RESTART recovery action, so a self-restart would force-kill the agent "
+            "with no way to bring it back (a detached helper inherits the same "
+            "underprivileged token and its 'net start' is denied with System error 5). "
+            "Add an SCM restart recovery action (e.g. `sc.exe failure <svc> reset= 86400 "
+            "actions= restart/10000`) or reinstall the service as LocalSystem, then retry.",
+            details={"service_account": account, "scm_restart_recovery": False},
+        )
+    if not wrapper_pid:
+        raise HandlerError(
+            "service_restart_unsafe",
+            f"could not resolve the WinSW wrapper PID for '{name}', so the SCM-recovery "
+            "self-restart (force-kill the tree, let SCM recovery restart it) cannot run "
+            "safely under an underprivileged token. Verify the service is running and retry.",
+            details={"service_account": account, "wrapper_pid": None},
+        )
+
+    cmd = _WIN_RESTART_DETACHED_TREEKILL_ONLY.format(pid=wrapper_pid)
     launch = await run_shell_split(cmd, timeout=30.0)
     return {
         "ok": True,
         "status": "restart_started",
         "expected_disconnect": True,
         "verification_required": True,
-        "method": "taskkill_tree" if wrapper_pid else "net_stop_start",
+        "method": "scm_recovery_self_kill",
         "wrapper_pid": wrapper_pid,
+        "service_account": account,
         "detail": (
-            "Windows service restart launched (detached). The whole service-owned "
-            "process tree is force-terminated, then a fresh generation starts. The "
-            "agent connection will drop and reconnect on the new generation -- this "
-            "is expected, not a failure. Confirm with the capabilities op and verify "
+            "Windows service restart launched (detached, non-SYSTEM). The service runs "
+            f"as {account}; a detached helper cannot 'net start' it (System error 5), so "
+            "the whole service-owned process tree is force-terminated ONLY and the "
+            "service's SCM RESTART recovery action brings it back. The agent connection "
+            "will drop and reconnect on the new generation -- this is expected, not a "
+            "failure. Confirm with the capabilities op and verify the new PID/version "
+            "once it responds."
+        ),
+        "helper": launch,
+    }
+
+
+# task restart/reload (issue #4): a plain `schtasks /End` kills the agent (and can
+# orphan its child tree) before `/Run` -- the same self-kill / duplicate-session
+# family as #19. Spawn a DETACHED helper (WMI Win32_Process.Create, inherits the
+# interactive user token so it can control the user's own task) that force-kills the
+# agent's whole process tree, ends the task instance, then /Run starts a fresh
+# generation. The agent PID is resolved in Python and injected as a literal so the
+# CommandLine stays single-quoted with no inner double quotes.
+_WIN_TASK_RESTART_DETACHED_TREEKILL = (
+    "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+    "@{{ CommandLine = 'cmd /c timeout /t 2 /nobreak >nul & taskkill /F /T /PID {pid} "
+    "& schtasks /End /TN {name} & timeout /t 2 /nobreak >nul & schtasks /Run /TN {name}' }} "
+    "| Select-Object -ExpandProperty ProcessId"
+)
+
+
+async def _windows_task_restart(name: str) -> dict[str, Any]:
+    """Hardened Windows Scheduled-Task self-restart (issue #4).
+
+    The per-user task backend (-User install) runs the agent directly as a
+    Scheduled Task -- no WinSW wrapper, no admin -- so the agent IS the task's
+    process and os.getpid() is the tree to kill. A plain `schtasks /End` kills the
+    agent (and can orphan its children) before `/Run`, the same self-kill /
+    duplicate-session family as #19. We launch a DETACHED helper (WMI, inheriting
+    the interactive user token so it can control the user's own task) that
+    force-kills the agent's whole process tree, ends the task instance, then /Run
+    starts a fresh generation. Returns a structured restart_started ack (never
+    "completed"); the caller must verify the new PID/version after reconnect.
+    """
+    agent_pid = os.getpid()
+    cmd = _WIN_TASK_RESTART_DETACHED_TREEKILL.format(pid=agent_pid, name=name)
+    launch = await run_shell_split(cmd, timeout=30.0)
+    return {
+        "ok": True,
+        "status": "restart_started",
+        "expected_disconnect": True,
+        "verification_required": True,
+        "method": "task_treekill_run",
+        "backend": "task",
+        "agent_pid": agent_pid,
+        "task_name": name,
+        "detail": (
+            "Windows Scheduled-Task restart launched (detached, per-user). The "
+            "agent's whole process tree is force-terminated, the task instance is "
+            "ended, then a fresh instance starts via schtasks /Run. The agent "
+            "connection will drop and reconnect on the new generation -- this is "
+            "expected, not a failure. Confirm with the capabilities op and verify "
             "the new PID/version once it responds."
         ),
         "helper": launch,
@@ -239,8 +406,11 @@ def make_service_handler(policy: Policy):
             )
 
         backend = getattr(spec, "backend", "service")
-        if action in ("restart", "reload") and sys.platform == "win32" and backend == "service":
-            return await _windows_service_restart(spec.unit)
+        if action in ("restart", "reload") and sys.platform == "win32":
+            if backend == "service":
+                return await _windows_service_restart(spec.unit)
+            if backend == "task":
+                return await _windows_task_restart(spec.unit)
 
         cmd = _build_service_cmd(action, spec)
         return await run_shell_split(cmd, timeout=30.0)

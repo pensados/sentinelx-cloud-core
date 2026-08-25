@@ -3,6 +3,32 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.10 — Windows non-SYSTEM hardening: LocalService restart (#19), user-mode task restart (#4), backend-aware guidance (#7) — 2026-08-25
+
+- Windows SCM self-restart, LocalService case (#19, follow-up to 0.11.9). 0.11.9's
+  tree-kill + `net start` works when the service runs as LocalSystem, but on a LocalService
+  (or any non-SYSTEM) install the detached WMI helper inherits the same underprivileged
+  token, so its `net start` is denied (System error 5) and the service is left down. The
+  restart op now branches by service account (`sc.exe qc`): a SYSTEM install keeps the
+  unchanged tree-kill + `net start` path (`method=taskkill_tree`); a non-SYSTEM install
+  force-kills the tree ONLY and lets the service's own SCM RESTART recovery action bring it
+  back (`method=scm_recovery_self_kill`). If no SCM RESTART recovery action exists (or the
+  wrapper PID can't be resolved) the op FAILS CLOSED (`service_restart_unsafe`) and kills
+  nothing, rather than leaving the service down with no way back.
+
+- Windows user-mode (Scheduled Task) self-restart (#4). The no-admin `-User` install runs
+  the agent as a per-user Scheduled Task; a plain `schtasks /End` killed the agent (and
+  could orphan its child tree) before `/Run`, so restarts didn't take. The task backend now
+  gets the same detached, verified treatment: a detached helper force-kills the agent's
+  whole process tree, ends the task instance, then `/Run` starts a fresh generation,
+  returning a structured `restart_started` ack (`method=task_treekill_run`).
+
+- Backend-aware capabilities and guidance (#7). A `-User` (task-backend) install was
+  described to the model as a WinSW service, so the restart command, log paths and host
+  wording it emitted were wrong. `capabilities.services[*]` now reports each service's
+  `backend`, and the platform guidance (restart command, log location, host kind) adapts
+  when the agent's own install is a per-user Scheduled Task instead of a WinSW service.
+
 ## 0.11.9
 
 - Windows self-restart hardening (#19): the SCM/WinSW restart now force-terminates the

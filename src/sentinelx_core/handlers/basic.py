@@ -110,6 +110,7 @@ def make_capabilities_handler(
             "services": {
                 name: {
                     "unit": spec.unit,
+                    "backend": getattr(spec, "backend", "service"),
                     "actions": list(spec.actions),
                     "requires_sudo": spec.requires_sudo,
                     "description": spec.description,
