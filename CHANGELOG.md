@@ -3,6 +3,23 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.12 — WebSocket liveness and reconnect recovery (#37) — 2026-08-28
+
+- Native WebSocket keepalive is now enabled on the hub connection (`ping_interval=30`,
+  `ping_timeout=60`); it was previously disabled (`ping_interval=None`). The existing
+  application-level `PingMessage` heartbeat sent messages but enforced no response deadline,
+  so a half-open connection (local TCP socket still `ESTABLISHED` while the hub has already
+  dropped the agent) could go undetected. The native ping/pong now closes such a dead
+  connection and triggers a reconnect. The application heartbeat is preserved.
+
+- Reconnect backoff is reset after a successful `welcome`. Previously the retry counter only
+  ever increased, so a long healthy session that ended with a `1006` could inherit an old
+  30/60/120/300s backoff and reconnect slowly. A session that reached `welcome` now restarts
+  from the short retry interval, while failures before a successful `welcome` keep escalating
+  on the existing schedule. The prompt `1012` hub-restart behavior is unchanged.
+
+- Contributed by @rogal73.
+
 ## 0.11.11 — Backend-aware config path in guidance (#7 follow-up) — 2026-08-25
 
 - Guidance now points the operator at the agent's ACTUAL config file. 0.11.10 made the
