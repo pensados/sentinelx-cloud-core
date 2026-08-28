@@ -271,6 +271,7 @@ class HubClient:
         self._identity = identity
         self._executor = Executor(config_path=config_path)
         self._stop = asyncio.Event()
+        self._session_established = False
 
     async def run(self) -> None:
         """Main loop: connect, handle messages, reconnect on failure."""
@@ -285,6 +286,7 @@ class HubClient:
                 except asyncio.TimeoutError:
                     pass
 
+            self._session_established = False
             try:
                 await self._connect_and_serve()
                 attempt = 0  # reset on clean disconnect
@@ -302,17 +304,20 @@ class HubClient:
                     attempt = 0
                 else:
                     logger.warning("connection closed (%s): %s", exc.code, exc)
-                    attempt += 1
+                    attempt = 1 if self._session_established else attempt + 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("connection failed: %s", exc)
-                attempt += 1
+                attempt = 1 if self._session_established else attempt + 1
 
     async def _connect_and_serve(self) -> None:
         url = f"{self._ws_url}/agent/connect?token={self._identity.token}"
         logger.info("connecting to %s", self._ws_url)
 
         async with websockets.connect(
-            url, ping_interval=None, max_size=MAX_BINARY_FRAME_BYTES
+            url,
+            ping_interval=30,
+            ping_timeout=60,
+            max_size=MAX_BINARY_FRAME_BYTES,
         ) as ws:
             # 1. Send hello
             hello = HelloMessage(
@@ -343,6 +348,9 @@ class HubClient:
             if welcome.type != "welcome":  # type: ignore[union-attr]
                 raise RuntimeError(f"expected welcome, got {welcome.type}")  # type: ignore[union-attr]
 
+            # A valid welcome starts a new retry history. If this session later
+            # fails, the exception handler advances from zero to the first retry.
+            self._session_established = True
             logger.info("connected; session=%s", welcome.session_id)  # type: ignore[union-attr]
 
             # 3. Concurrent loops: read messages, send heartbeat
