@@ -310,11 +310,23 @@ class HubClient:
                 attempt = 1 if self._session_established else attempt + 1
 
     async def _connect_and_serve(self) -> None:
-        url = f"{self._ws_url}/agent/connect?token={self._identity.token}"
+        url = f"{self._ws_url}/agent/connect"
         logger.info("connecting to %s", self._ws_url)
+
+        # Carry the enrollment token in the Authorization header, not the query
+        # string, so the request URL stays short. Long query strings are
+        # rejected by some edges/proxies with HTTP 400 (issue #34). websockets
+        # renamed extra_headers -> additional_headers in 14.0.
+        hdr_kw = (
+            "additional_headers"
+            if int(websockets.__version__.split(".")[0]) >= 14
+            else "extra_headers"
+        )
+        auth_headers = {"Authorization": f"Bearer {self._identity.token}"}
 
         async with websockets.connect(
             url,
+            **{hdr_kw: auth_headers},
             ping_interval=30,
             ping_timeout=60,
             max_size=MAX_BINARY_FRAME_BYTES,

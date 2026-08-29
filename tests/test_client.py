@@ -115,12 +115,18 @@ class HubClientKeepaliveTests(unittest.IsolatedAsyncioTestCase):
         ):
             await client._connect_and_serve()
 
-        connect.assert_called_once_with(
-            "wss://hub.example/agent/connect?token=test-token",
-            ping_interval=30,
-            ping_timeout=60,
-            max_size=MAX_BINARY_FRAME_BYTES,
+        connect.assert_called_once()
+        call_args, call_kwargs = connect.call_args
+        # Token must NOT be in the URL (short URL avoids edge 400s, #34)...
+        self.assertEqual(call_args[0], "wss://hub.example/agent/connect")
+        # ...it is carried in the Authorization header instead.
+        headers = call_kwargs.get("additional_headers") or call_kwargs.get(
+            "extra_headers"
         )
+        self.assertEqual(headers, {"Authorization": "Bearer test-token"})
+        self.assertEqual(call_kwargs["ping_interval"], 30)
+        self.assertEqual(call_kwargs["ping_timeout"], 60)
+        self.assertEqual(call_kwargs["max_size"], MAX_BINARY_FRAME_BYTES)
         self.assertTrue(client._session_established)
 
     async def test_application_ping_heartbeat_remains_active(self) -> None:

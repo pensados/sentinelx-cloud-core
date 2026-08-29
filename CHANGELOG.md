@@ -3,6 +3,15 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.13 — Carry enrollment token in the Authorization header (#34) — 2026-08-29
+
+- The WS handshake now sends the enrollment token in an `Authorization: Bearer`
+  header and uses a short `/agent/connect` URL, instead of a long `?token=`
+  query string. Some edges and proxies reject the request with HTTP 400 when the
+  query string is long (issue #34), before it reaches the origin. The hub reads
+  the header, with a query-string fallback (hub 0.22.2), so existing agents keep
+  working unchanged.
+
 ## 0.11.12 — WebSocket liveness and reconnect recovery (#37) — 2026-08-28
 
 - Native WebSocket keepalive is now enabled on the hub connection (`ping_interval=30`,
