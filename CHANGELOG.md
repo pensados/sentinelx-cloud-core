@@ -3,6 +3,17 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.14 — Fail loud on a corrupted enrollment token — 2026-09-04
+
+- `load_identity` now validates the enrollment token when it reads
+  identity.json: surrounding whitespace is trimmed, and a token with
+  non-ASCII characters, internal whitespace, or the wrong structure is
+  rejected with a clear, actionable `IdentityError` instead of being handed
+  to the hub and looping forever on an opaque 403. The usual cause is a token
+  corrupted on copy-paste by browser page translation; the message says so
+  and tells the operator to re-enroll with translation off. `__main__`
+  catches it and exits with one clean log line instead of a traceback.
+
 ## 0.11.13 — Carry enrollment token in the Authorization header (#34) — 2026-08-29
 
 - The WS handshake now sends the enrollment token in an `Authorization: Bearer`

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from sentinelx_core.client import HubClient
-from sentinelx_core.identity import load_identity
+from sentinelx_core.identity import IdentityError, load_identity
 
 
 def main() -> None:
@@ -56,7 +56,11 @@ def main() -> None:
     except Exception:
         pass
 
-    identity = load_identity(args.identity)
+    try:
+        identity = load_identity(args.identity)
+    except IdentityError as exc:
+        logging.getLogger("sentinelx_core").error("identity: %s", exc)
+        sys.exit(1)
     hub_url = args.hub or identity.hub
 
     client = HubClient(
