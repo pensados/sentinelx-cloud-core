@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.15 - Contain WebSocket task failures during teardown - 2026-09-06
+
+- Merged #43 (thanks @Galactus-Prime; fixes #42): connection-scoped
+  request/binary/background tasks are retained until completion and their
+  exceptions are consumed deterministically, and the read/heartbeat loop tasks
+  are gathered with return_exceptions=True during teardown, so transport
+  disconnects (1006/1012/keepalive timeout) no longer leak `Task exception was
+  never retrieved`. An in-flight foreground operation is not cancelled merely
+  because its response socket closed, so replay/idempotency stays authoritative.
+- Hardened the teardown regression test so the task is collected while the
+  custom loop exception handler is still installed, making it a real guard.
+
 ## 0.11.14 — Fail loud on a corrupted enrollment token — 2026-09-04
 
 - `load_identity` now validates the enrollment token when it reads

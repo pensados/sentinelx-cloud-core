@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import unittest
 from datetime import UTC, datetime
@@ -176,6 +177,13 @@ class HubClientTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 client._handle_request(websocket, request)
             )
             await asyncio.wait({task})
+            await asyncio.sleep(0)
+            # Drop the task and force collection while the custom handler is
+            # still installed: "Task exception was never retrieved" is emitted
+            # from Task.__del__ via the loop handler, so holding a strong ref
+            # past handler restoration would let a non-consuming regression pass.
+            del task
+            gc.collect()
             await asyncio.sleep(0)
         finally:
             loop.set_exception_handler(old_handler)
