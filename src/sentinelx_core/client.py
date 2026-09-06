@@ -21,7 +21,6 @@ from typing import Any
 from uuid import uuid4
 
 import websockets
-from websockets.exceptions import ConnectionClosed
 from sentinelx_protocol import (
     HEARTBEAT_INTERVAL_SECONDS,
     MAX_BINARY_FRAME_BYTES,
@@ -37,6 +36,7 @@ from sentinelx_protocol import (
     is_binary_transfer_frame,
     parse_message,
 )
+from websockets.exceptions import ConnectionClosed
 
 from sentinelx_core import AGENT_VERSION
 from sentinelx_core.executor import Executor
@@ -272,6 +272,7 @@ class HubClient:
         self._executor = Executor(config_path=config_path)
         self._stop = asyncio.Event()
         self._session_established = False
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def run(self) -> None:
         """Main loop: connect, handle messages, reconnect on failure."""
@@ -383,6 +384,9 @@ class HubClient:
                 for task in (read_task, heartbeat_task):
                     if not task.done():
                         task.cancel()
+                # Always await both connection-loop tasks so a simultaneous
+                # transport failure cannot leave an exception un-retrieved.
+                await asyncio.gather(read_task, heartbeat_task, return_exceptions=True)
 
     async def _read_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         async for raw in ws:
@@ -390,7 +394,7 @@ class HubClient:
             # chunks from the Hub) are raw bytes carrying the mini-framing
             # header; everything else is JSON control. See sentinelx_protocol.binary.
             if is_binary_transfer_frame(raw):
-                asyncio.create_task(self._handle_binary_frame(ws, raw))
+                self._spawn_background_task(self._handle_binary_frame(ws, raw))
                 continue
             try:
                 data = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode())
@@ -401,7 +405,7 @@ class HubClient:
 
             if msg.type == "request":  # type: ignore[union-attr]
                 # Handle in background so a slow op doesn't block the read loop
-                asyncio.create_task(self._handle_request(ws, msg))
+                self._spawn_background_task(self._handle_request(ws, msg))
             elif msg.type == "ping":  # type: ignore[union-attr]
                 await ws.send(
                     PongMessage(timestamp=datetime.now(timezone.utc)).model_dump_json()
@@ -438,7 +442,7 @@ class HubClient:
             },
         }
         await ws.send(json.dumps(ack, default=str))
-        asyncio.create_task(
+        self._spawn_background_task(
             self._run_job_and_report(ws, request, job_id, started_at)
         )
 
@@ -566,6 +570,38 @@ class HubClient:
             ).model_dump_json())
         except Exception:  # noqa: BLE001
             pass
+
+    def _spawn_background_task(self, awaitable: Any) -> asyncio.Task[Any]:
+        """Retain fire-and-forget work and deterministically consume failures.
+
+        Foreground request execution is deliberately not cancelled when a
+        connection closes: the operation may already have crossed a mutation
+        boundary and existing request replay/idempotency remains authoritative.
+        The task is retained until completion so Python never reports an orphaned
+        exception if response delivery later fails on the old WebSocket.
+        """
+        task = asyncio.create_task(awaitable)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_task_done)
+        return task
+
+    def _background_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is None:
+            return
+        if isinstance(exc, ConnectionClosed):
+            logger.debug("background task ended after WebSocket close: %s", exc)
+        else:
+            logger.error(
+                "background client task failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
     async def _heartbeat_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         from sentinelx_protocol import PingMessage
