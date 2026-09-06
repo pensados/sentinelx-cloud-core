@@ -32,6 +32,7 @@ class HubClientReconnectTests(unittest.IsolatedAsyncioTestCase):
         self.client = object.__new__(HubClient)
         self.client._stop = asyncio.Event()
         self.client._session_established = False
+        self.client._background_tasks = set()
 
     async def _run_actions(self, actions: list[str]) -> list[float]:
         remaining = list(actions)
@@ -99,6 +100,7 @@ class HubClientKeepaliveTests(unittest.IsolatedAsyncioTestCase):
             preferred_profile=lambda: None,
         )
         client._session_established = False
+        client._background_tasks = set()
 
         welcome = WelcomeMessage(
             session_id="session-test",
@@ -153,6 +155,76 @@ class HubClientKeepaliveTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(websocket.send.await_args.args[0])
         self.assertEqual(payload["type"], "ping")
         self.assertIn("timestamp", payload)
+
+
+class HubClientTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_background_request_close_is_retained_and_consumed(self) -> None:
+        client = object.__new__(HubClient)
+        client._background_tasks = set()
+        client._executor = SimpleNamespace(
+            dispatch=AsyncMock(return_value={"ok": True, "result": {}})
+        )
+        websocket = AsyncMock()
+        websocket.send.side_effect = ConnectionClosed(None, None)
+        request = SimpleNamespace(id="req-1", op="state", payload={})
+        loop = asyncio.get_running_loop()
+        contexts: list[dict[str, object]] = []
+        old_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+        try:
+            task = client._spawn_background_task(
+                client._handle_request(websocket, request)
+            )
+            await asyncio.wait({task})
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(old_handler)
+        self.assertEqual(client._background_tasks, set())
+        self.assertEqual(contexts, [])
+
+    async def test_connect_teardown_retrieves_both_loop_failures(self) -> None:
+        client = object.__new__(HubClient)
+        client._ws_url = "wss://hub.example"
+        client._identity = SimpleNamespace(token="test-token", host_id="host-test")
+        client._executor = SimpleNamespace(
+            config_summary=dict,
+            capability_names=list,
+            preferred_profile=lambda: None,
+        )
+        client._session_established = False
+        client._background_tasks = set()
+        welcome = WelcomeMessage(
+            session_id="session-test",
+            server_time=datetime.now(UTC),
+        )
+        websocket = AsyncMock()
+        websocket.recv.return_value = welcome.model_dump_json()
+        connect = Mock(return_value=_ConnectionContext(websocket))
+        gate = asyncio.Event()
+
+        async def fail_loop(_ws: object) -> None:
+            await gate.wait()
+            raise ConnectionClosed(None, None)
+
+        loop = asyncio.get_running_loop()
+        contexts: list[dict[str, object]] = []
+        old_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+        try:
+            with (
+                patch("sentinelx_core.client.websockets.connect", new=connect),
+                patch.object(client, "_read_loop", new=fail_loop),
+                patch.object(client, "_heartbeat_loop", new=fail_loop),
+            ):
+                runner = asyncio.create_task(client._connect_and_serve())
+                await asyncio.sleep(0)
+                gate.set()
+                with self.assertRaises(ConnectionClosed):
+                    await runner
+                await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(old_handler)
+        self.assertEqual(contexts, [])
 
 
 if __name__ == "__main__":
