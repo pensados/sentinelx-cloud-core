@@ -3,6 +3,29 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.18 - sudo no longer exempts an edit from the writable allowlist - 2026-09-08
+
+- `edit` treated `sudo=true` as an exemption from the file_ops rw check, on
+  the stated assumption that a sudo edit was bounded by the installer's
+  sudoers fragment. The installer granted NOPASSWD:ALL, so no such bound
+  existed: any request could write any file as root, including this agent's
+  own config. An agent that can rewrite its own allowlist does not have one,
+  which made the rw model advisory rather than enforced. Reported by OpenAI
+  Security.
+- The rw check now applies regardless of sudo, on both the single-call and
+  the chunked-upload path (fixing only the first would have moved the bypass
+  rather than closed it). Canonicalization is unchanged. Operators who do
+  want the agent to maintain its own policy can add the config file to
+  file_ops with access: rw, which makes it a visible choice in their config
+  instead of an invisible property of a flag.
+- The policy-editing playbooks now hand the change to the user instead of
+  attempting it, and say why.
+- Corrected a false statement in config.example.yaml: it claimed every
+  command inside a sentinel_script_run script is allowlist-checked. Script
+  contents are not checked at all. Users were choosing a conservative
+  allowlist believing it bounded scripts; what bounds a script is what the
+  agent's user account may do on the host.
+
 ## 0.11.17 - An emptied config no longer blocks its own repair - 2026-09-08
 
 - `edit` and `script_run` stage content in a workdir under `upload_base`

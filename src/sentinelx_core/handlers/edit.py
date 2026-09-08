@@ -286,45 +286,32 @@ def make_edit_handler(policy: Policy, upload_base: Path):
             raise HandlerError("invalid_payload", "missing 'mode'")
 
         # Path-enforce under the unified r/rw model. `edit` is a mutating
-        # op. Canonicalization (resolve symlinks, collapse `..`) ALWAYS
-        # happens — that anti-traversal / anti-symlink-escape defense is
-        # independent of sudo. We only ENFORCE the rw allowlist verdict
-        # for NON-sudo edits.
+        # op: the path must resolve under a file_ops entry with access
+        # rw, and canonicalization (resolve symlinks, collapse `..`)
+        # always happens first so the verdict cannot be dodged by
+        # traversal.
         #
-        # Why the sudo carve-out: a sudo edit crosses a SEPARATE,
-        # operator-controlled trust boundary — the installer's sudoers
-        # fragment, locked to the `pensa-safe-edit` binary. That is the
-        # legitimate, audited mechanism by which the operator administers
-        # the agent's OWN policy: the add_allowed_read_path playbook
-        # edits the root-owned /etc/sentinelx/config.yaml with sudo=true.
-        # Gating sudo edits ALSO by rw would break self-service policy
-        # administration while adding no real security — a sane sudoers
-        # already bounds what a sudo edit can touch; a lax sudoers was
-        # already game-over before the rw model existed. This is exactly
-        # the legacy "filesystem permissions + sudo policy" boundary,
-        # deliberately preserved for the sudo path only. Non-sudo edits
-        # (the common case: the LLM editing project files) stay fully
-        # gated — A2 cannot grant itself rw on a non-sudo path, and in
-        # particular cannot rewrite an unprivileged policy file.
+        # sudo does NOT exempt an edit from this. It used to: the
+        # reasoning was that a sudo edit crossed a separate boundary,
+        # the operator's sudoers fragment, assumed to be locked to the
+        # pensa-safe-edit binary. The installer never wrote such a
+        # fragment -- it granted NOPASSWD:ALL -- so the assumed boundary
+        # did not exist, and the exemption let any request write any
+        # file as root, including this very policy file. An agent that
+        # can rewrite its own allowlist has no allowlist, which made the
+        # rw model advisory rather than enforced. Reported by OpenAI
+        # Security, 2026-09.
+        #
+        # Operators who genuinely want the agent to administer its own
+        # policy can still have it: add the config file to file_ops as
+        # rw. That is then a visible, deliberate entry in their config
+        # instead of an invisible property of the sudo flag.
         resolved = policy.resolve_path(str(path), need_write=True)
         if resolved is not None:
             # Under an rw entry (sudo or not): use the canonical path.
             path = str(resolved)
-        elif sudo:
-            # Not under any rw entry, but sudo: the sudoers fragment is
-            # the boundary here, not the rw model. Still canonicalize
-            # for the traversal/symlink guarantee, using the same
-            # primitive resolve_path uses internally.
-            try:
-                path = str(Path(str(path)).resolve(strict=False))
-            except (OSError, RuntimeError):
-                raise HandlerError(
-                    "invalid_path",
-                    "path could not be resolved (bad path or circular "
-                    "symlink).",
-                )
         else:
-            # Not under any rw entry and not sudo: reject. This is the
+            # Not under any rw entry: reject, sudo or not. This is the
             # load-bearing check for A2 (compromised LLM).
             rw_paths = [
                 e.path for e in policy.file_ops_paths if e.access == "rw"
@@ -333,7 +320,9 @@ def make_edit_handler(policy: Policy, upload_base: Path):
                 "path_not_allowed",
                 "edit requires a path under a file_ops entry with "
                 "access: rw. The requested path is not within any "
-                "writable allowlist entry.",
+                "writable allowlist entry. sudo does not lift this: to "
+                "let the agent write here, add the path to file_ops "
+                "with access: rw.",
                 details={"writable_paths": rw_paths},
             )
 
@@ -518,23 +507,13 @@ def make_edit_upload_complete_handler(policy: Policy, upload_base: Path):
                 "mode=replace-block requires 'start_marker' and 'end_marker'",
             )
 
-        # Path-enforce under the unified r/rw model (same logic as
-        # handle_edit — the chunked-upload path is just as much a write
-        # and must not be a bypass of the rw allowlist; the sudo
-        # carve-out is identical and for the same reason: sudo edits
-        # are bounded by the operator's sudoers, not the rw model).
+        # Path-enforce under the unified r/rw model (same rule as
+        # handle_edit: the chunked-upload path is just as much a write,
+        # so it must not become the bypass that the single-call path no
+        # longer is). sudo does not exempt it either.
         resolved = policy.resolve_path(str(path), need_write=True)
         if resolved is not None:
             path = str(resolved)
-        elif sudo:
-            try:
-                path = str(Path(str(path)).resolve(strict=False))
-            except (OSError, RuntimeError):
-                raise HandlerError(
-                    "invalid_path",
-                    "path could not be resolved (bad path or circular "
-                    "symlink).",
-                )
         else:
             rw_paths = [
                 e.path for e in policy.file_ops_paths if e.access == "rw"
@@ -543,7 +522,9 @@ def make_edit_upload_complete_handler(policy: Policy, upload_base: Path):
                 "path_not_allowed",
                 "edit requires a path under a file_ops entry with "
                 "access: rw. The requested path is not within any "
-                "writable allowlist entry.",
+                "writable allowlist entry. sudo does not lift this: to "
+                "let the agent write here, add the path to file_ops "
+                "with access: rw.",
                 details={"writable_paths": rw_paths},
             )
 

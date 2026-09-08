@@ -237,12 +237,17 @@ playbooks:
       - "Read the current config to confirm the file path and locate the
          allowed_commands section: call sentinel_exec with command 'sudo
          cat /etc/sentinelx/config.yaml'."
-      - "Use sentinel_edit in 'replace' mode to insert the new command
-         under the allowed_commands list. Anchor the edit on an existing
-         '  - <something>' line that's adjacent to where the new entry
-         logically belongs (alphabetical or by category). Pass sudo=true
-         since /etc/sentinelx is root-owned. Use validator_preset='yaml' so
-         the edit is rejected if it produces invalid YAML."
+      - "Do NOT try to edit the config yourself. sentinel_edit refuses any
+         path outside a file_ops entry with access: rw, and sudo does not
+         lift that -- an agent that can rewrite its own allowlist does not
+         have one. Instead, show the user the exact line to add and where
+         it goes, and ask them to make the change. This is a deliberate
+         boundary, so present it as normal rather than as an error."
+      - "If the user would rather the agent maintained the policy itself,
+         they can add /etc/sentinelx/config.yaml to file_ops with
+         access: rw. Say plainly what that means before they do it: the
+         agent could then grant itself any command, so the allowlist stops
+         being a limit on it."
       - "Reload the agent so the new policy takes effect. Two paths,
          depending on whether 'sentinelx-cloud-core' is declared in
          this same config under services:
@@ -270,10 +275,12 @@ playbooks:
          sentinel_service without operator intervention."
     notes:
       - "If the user only needs the command for a single invocation, prefer
-         sentinel_script_run over modifying the policy. Scripts run inside
-         a subshell where every command is still allowlist-checked, so this
-         is not a way to bypass policy — it's a way to compose allowed
-         commands without persisting the new entry."
+         sentinel_script_run over modifying the policy. Be accurate about
+         what that means: a script runs as the agent's user and its
+         contents are NOT checked against allowed_commands. The allowlist
+         shapes what sentinel_exec will run; it is a guardrail for the
+         model, not a sandbox. What actually bounds a script is what the
+         agent's user account is permitted to do on the host."
       - "Avoid adding commands that grant broad privilege escalation (su,
          chsh, visudo, unrestricted sudo, etc.) without warning the user.
          The whole point of the allowlist is to be conservative."
@@ -306,14 +313,12 @@ playbooks:
          file_ops section: call sentinel_exec with command 'sudo cat
          /etc/sentinelx/config.yaml'. If there is no file_ops block yet,
          this playbook still applies — you will be creating it."
-      - "Use sentinel_edit in 'replace' mode to add the new entry under
-         file_ops.allowed_read_paths. Anchor the edit on an existing
-         '    - <path>' line in that list. If the file_ops block does not
-         exist at all, add the whole block (file_ops: / allowed_read_paths:
-         / the entry) anchored on a stable nearby line such as the end of
-         the security block. Pass sudo=true since /etc/sentinelx is
-         root-owned. Use validator_preset='yaml' so the edit is rejected
-         if it produces invalid YAML."
+      - "Do NOT try to edit the config yourself: sentinel_edit refuses
+         paths outside an rw file_ops entry, and sudo does not lift that.
+         Give the user the exact YAML to add and where it goes (under
+         file_ops.allowed_read_paths, or the whole file_ops block if it
+         does not exist yet), and ask them to apply it. Editing its own
+         policy is precisely what the agent is not allowed to do."
       - "Reload the agent so the new policy takes effect. Two paths,
          depending on whether 'sentinelx-cloud-core' is declared in this
          same config under services:
