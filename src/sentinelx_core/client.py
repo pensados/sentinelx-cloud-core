@@ -294,6 +294,9 @@ class HubClient:
             except FatalProtocolError as exc:
                 logger.error("fatal protocol error, not reconnecting: %s", exc)
                 return
+            except EnrollmentRejected as exc:
+                _log_enrollment_rejected(str(exc))
+                attempt += 1
             except ConnectionClosed as exc:
                 # 1012 = "service restart": the hub told us it is coming
                 # right back (e.g. a deploy). That is not a network failure,
@@ -303,6 +306,16 @@ class HubClient:
                 if exc.code == 1012:
                     logger.info("hub restarting (1012); reconnecting promptly")
                     attempt = 0
+                elif exc.code == 1008:
+                    # Policy rejection. The hub closes right after sending the
+                    # error frame, so whether we get to read that frame is a
+                    # race; losing it used to surface here as a plain
+                    # "connection closed" and retry in silence. Same cause,
+                    # same message, either way.
+                    _log_enrollment_rejected(
+                        _close_reason(exc) or "policy violation"
+                    )
+                    attempt += 1
                 else:
                     logger.warning("connection closed (%s): %s", exc.code, exc)
                     attempt = 1 if self._session_established else attempt + 1
@@ -355,9 +368,11 @@ class HubClient:
             raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
             welcome = parse_message(json.loads(raw))
             if welcome.type == "error":  # type: ignore[union-attr]
-                raise FatalProtocolError(
-                    f"hub rejected: {welcome.code}: {welcome.message}"  # type: ignore[union-attr]
-                )
+                code = welcome.code  # type: ignore[union-attr]
+                message = welcome.message  # type: ignore[union-attr]
+                if code == "enrollment_rejected":
+                    raise EnrollmentRejected(message)
+                raise FatalProtocolError(f"hub rejected: {code}: {message}")
             if welcome.type != "welcome":  # type: ignore[union-attr]
                 raise RuntimeError(f"expected welcome, got {welcome.type}")  # type: ignore[union-attr]
 
@@ -612,5 +627,47 @@ class HubClient:
             await ws.send(ping.model_dump_json())
 
 
+def _close_reason(exc: ConnectionClosed) -> str:
+    """Close reason across websockets versions.
+
+    ``ConnectionClosed.reason`` is deprecated since 13.1 in favour of
+    ``.rcvd.reason``, but ``.rcvd`` does not exist on older releases the agent
+    still runs on, so prefer the new accessor and fall back.
+    """
+    rcvd = getattr(exc, "rcvd", None)
+    if rcvd is not None and getattr(rcvd, "reason", None):
+        return str(rcvd.reason)
+    try:
+        return str(exc.reason or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _log_enrollment_rejected(detail: str) -> None:
+    """One place for the message, so the frame and close paths never diverge."""
+    logger.error(
+        "ENROLLMENT REJECTED by the hub (%s). This host will keep retrying but "
+        "cannot connect until it is fixed. Either the enrollment token in "
+        "identity.json is not the one the hub issued (it can be altered when "
+        "copied -- re-run enrollment from the dashboard to get a fresh one), or "
+        "the owner disabled this host in the dashboard (re-enable it and this "
+        "agent reconnects on its own within a few minutes).",
+        detail,
+    )
+
+
 class FatalProtocolError(Exception):
     """Hub sent a fatal error. Don't reconnect."""
+
+
+class EnrollmentRejected(Exception):
+    """The hub refused our enrollment token, or this host is disabled.
+
+    Deliberately NOT a FatalProtocolError: retrying is the point. The two
+    causes both clear from the other side without touching this machine -- an
+    owner re-enables a disabled host, or a hub-side problem is fixed -- and an
+    agent that gave up would then need a manual restart on every host. So we
+    keep the normal retry cadence and instead make each attempt say plainly
+    what is wrong and what fixes it, because the previous behaviour was to log
+    it as an ordinary network failure and retry in silence.
+    """

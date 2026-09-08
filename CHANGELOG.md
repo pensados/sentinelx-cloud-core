@@ -3,6 +3,27 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.16 - Say when the hub refuses this host - 2026-09-08
+
+- A refused enrollment was indistinguishable from a network blip. The hub
+  sends an error frame and closes with 1008, but it closes immediately, so
+  whether we read that frame was a race: winning it raised a fatal error and
+  the agent stopped for good, losing it logged 'connection closed' and retried
+  in silence. Same refusal, two different behaviours, neither of them useful.
+  One host retried 919 times over four days with the reason sitting in its
+  journal.
+- Both paths now report the same thing: a single actionable line naming the
+  two possible causes (a token altered while being copied, or the host
+  disabled by its owner) and what fixes each. Retries continue at the normal
+  cadence on purpose, so re-enabling a host or fixing something hub-side heals
+  without touching the machine.
+- New `--verify-enrollment`: opens one connection, reports whether the hub
+  accepts this host's token, exits 0 or 1. Starts no session, so it is safe to
+  run alongside the agent. Being unable to reach the hub is reported
+  separately from a refused token, so a network fault is not mistaken for one.
+- Close reasons now read through `.rcvd` where available (`.reason` is
+  deprecated since websockets 13.1) with a fallback for older releases.
+
 ## 0.11.15 - Contain WebSocket task failures during teardown - 2026-09-06
 
 - Merged #43 (thanks @Galactus-Prime; fixes #42): connection-scoped
