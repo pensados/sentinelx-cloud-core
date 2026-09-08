@@ -51,6 +51,7 @@ from typing import Any
 
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
+from sentinelx_core.staging import staging_root
 
 VALID_MODES = ("replace", "regex", "replace-block", "append", "prepend", "write")
 VALID_PRESETS = ("nginx", "json", "python", "sh", "yaml", "systemd", "toml")
@@ -338,9 +339,7 @@ def make_edit_handler(policy: Policy, upload_base: Path):
 
         _validate_mode_payload(mode, payload)
 
-        upload_base.mkdir(parents=True, exist_ok=True)
-        tmp_root = upload_base / ".sentinelx_uploads"
-        tmp_root.mkdir(parents=True, exist_ok=True)
+        tmp_root = staging_root(upload_base)
 
         workdir = tmp_root / f"edit_job_{uuid.uuid4().hex}"
         workdir.mkdir(parents=True, exist_ok=True)
@@ -388,8 +387,7 @@ def make_edit_handler(policy: Policy, upload_base: Path):
 # --- Chunked edit upload --------------------------------------------------------
 
 def _edit_upload_dir(upload_base: Path, upload_id: str) -> Path:
-    tmp_root = upload_base / ".sentinelx_uploads"
-    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_root = staging_root(upload_base)
     upload_dir = tmp_root / f"edit_{upload_id}"
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir

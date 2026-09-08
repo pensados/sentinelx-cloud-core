@@ -8,6 +8,8 @@ anything site-specific.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,39 @@ import yaml
 from sentinelx_core import platform_guidance as _pg
 
 logger = logging.getLogger(__name__)
+
+# Candidates for upload_base when the config does not name one, best first.
+# /var/lib is where the service actually keeps its state on current installs;
+# /home/sentinelx/uploads is kept for legacy hosts that still use it.
+_UPLOAD_BASE_CANDIDATES = (
+    Path("/var/lib/sentinelx/uploads"),
+    Path("/home/sentinelx/uploads"),
+)
+
+
+def _is_usable_dir(path: Path) -> bool:
+    """True if `path` is a writable directory, or can be created in one."""
+    try:
+        if path.is_dir():
+            return os.access(path, os.W_OK)
+        parent = path.parent
+        return parent.is_dir() and os.access(parent, os.W_OK)
+    except OSError:
+        return False
+
+
+def default_upload_base() -> Path:
+    """First writable candidate, else a directory in the system temp space.
+
+    Never raises and creates nothing: callers (see staging.py) create the
+    directory when they need it, and fall back again at that point if the
+    filesystem has changed underneath.
+    """
+    for candidate in _UPLOAD_BASE_CANDIDATES:
+        if _is_usable_dir(candidate):
+            return candidate
+    return Path(tempfile.gettempdir()) / "sentinelx-uploads"
+
 
 
 @dataclass(frozen=True)
@@ -110,8 +145,12 @@ class Policy:
     exec_timeout_default: int = 60
     exec_timeout_max: int = 600
 
-    # Where uploads + edit workdirs live. Default mirrors legacy SentinelX.
-    upload_base: Path = field(default_factory=lambda: Path("/home/sentinelx/uploads"))
+    # Where uploads + edit workdirs live. Resolved rather than hardcoded: the
+    # old default was /home/sentinelx/uploads, which on most installs either
+    # does not exist or belongs to root, so an agent whose config lost its
+    # `upload_base` (e.g. an emptied config.yaml) could not stage anything --
+    # including the edit that would have restored the config.
+    upload_base: Path = field(default_factory=lambda: default_upload_base())
 
     # ── file_url SSRF defense ──────────────────────────────────────────────
     # When the hub asks the agent to fetch a URL (upload_file with file_url),
@@ -413,7 +452,7 @@ class Policy:
             exec_timeout_default=int(exec_block.get("timeout_default", 60)),
             exec_timeout_max=int(exec_block.get("timeout_max", 600)),
             upload_base=Path(
-                data.get("upload_base") or "/home/sentinelx/uploads"
+                data.get("upload_base") or default_upload_base()
             ).resolve(),
             trusted_fetch_hosts=tuple(
                 security_block.get("trusted_fetch_hosts") or ()

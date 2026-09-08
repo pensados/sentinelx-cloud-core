@@ -3,6 +3,24 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.11.17 - An emptied config no longer blocks its own repair - 2026-09-08
+
+- `edit` and `script_run` stage content in a workdir under `upload_base`
+  before writing anything, and `upload_base` is read from the agent config.
+  So a host whose config.yaml lost that setting fell back to a hardcoded
+  /home/sentinelx/uploads, which on most installs does not exist or belongs
+  to root: staging failed with a bare `Permission denied: /home/sentinelx`,
+  and the one tool that could have restored the config was the tool that had
+  stopped working. A real user hit this and needed manual recovery.
+- The default is now resolved instead of hardcoded (first writable of
+  /var/lib/sentinelx/uploads, the legacy /home/sentinelx/uploads, then the
+  system temp space), and staging falls back to the temp space at runtime if
+  the configured base cannot be written, warning once with the setting to
+  fix. An explicit `upload_base` is still honoured exactly as before, so
+  healthy hosts are unaffected.
+- If even the fallback fails, the error now names both paths and the setting
+  to change rather than surfacing a bare permission error.
+
 ## 0.11.16 - Say when the hub refuses this host - 2026-09-08
 
 - A refused enrollment was indistinguishable from a network blip. The hub

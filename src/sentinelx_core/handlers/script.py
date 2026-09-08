@@ -58,6 +58,7 @@ from typing import Any
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
+from sentinelx_core.staging import staging_root
 
 logger = logging.getLogger(__name__)
 
@@ -242,9 +243,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             raise HandlerError("invalid_payload", "'env' must be dict[str, str]")
 
         # Workdir
-        upload_base.mkdir(parents=True, exist_ok=True)
-        tmp_root = upload_base / ".sentinelx_uploads"
-        tmp_root.mkdir(parents=True, exist_ok=True)
+        tmp_root = staging_root(upload_base)
 
         script_id = uuid.uuid4().hex
         workdir = tmp_root / f"script_job_{script_id}"
