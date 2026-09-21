@@ -377,8 +377,11 @@ class HubClient:
         async with websockets.connect(
             url,
             **{hdr_kw: auth_headers},
-            ping_interval=30,
-            ping_timeout=60,
+            # SentinelX has its own application-level heartbeat.
+            # Disable websockets protocol-level keepalive to avoid
+            # false ping/pong timeouts through the Hub/proxy path.
+            ping_interval=None,
+            ping_timeout=None,
             max_size=MAX_BINARY_FRAME_BYTES,
         ) as ws:
             # 1. Send hello
