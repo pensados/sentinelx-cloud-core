@@ -3,6 +3,23 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.22.0 - A dry-run edit leaves no trace in the target's directory - 2026-09-26
+
+- sentinel_edit with dry_run=true was not side-effect free (reported on a QNAP CIFS
+  share, sxrep_7N7TJGYKFS4W). The safe editor created the parent directories up
+  front, touched a missing target when create=true before checking dry_run, and
+  wrote its temp file next to the target. So a dry-run create left the directory
+  and an empty file behind, and on any dry run the temp file was created and
+  deleted beside the target: invisible on a normal disk, but a share with a
+  recycle bin kept it, and directory watchers saw it.
+- Now arguments are validated before anything touches the disk; a dry run never
+  creates directories or the target (a missing target is simulated as empty, in
+  memory) and keeps its temp file, validation and diff in a private scratch dir
+  that is removed afterwards. Restore dry runs get the same treatment. Real runs
+  are unchanged: the temp stays beside the target so os.replace remains atomic.
+- A missing target without create, or an invalid call, no longer creates parents.
+- 8 tests; against the old editor 5 fail (the side effects), with the fix all pass.
+
 ## 0.21.0 - Deleting a SentinelX backup is terminal (reclaim disk space) - 2026-09-24
 
 - delete always backs up before destroying, and refuses if it can't -- good, but

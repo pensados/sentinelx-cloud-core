@@ -496,6 +496,18 @@ def _apply_mode(spec: EditSpec, original: str) -> tuple[str, int]:
     )
 
 
+def _scratch_for(spec: EditSpec) -> str | None:
+    """A private directory for a dry run's temp file, or None for a real run.
+
+    A dry run must leave no trace. Writing the temp next to the target (which
+    a real run needs, so os.replace stays an atomic same-filesystem rename)
+    creates and deletes a file in the user's directory: invisible on a normal
+    disk, but a NAS share with a recycle bin keeps the deleted temp, and any
+    directory watcher sees the change. Reported on a QNAP CIFS share.
+    """
+    return tempfile.mkdtemp(prefix="sx-dryrun-") if spec.dry_run else None
+
+
 def _do_restore(spec: EditSpec) -> EditResult:
     target = Path(spec.path)
     backup_path = Path(spec.restore or "")
@@ -512,8 +524,9 @@ def _do_restore(spec: EditSpec) -> EditResult:
             "the specified backup is not a regular file",
         )
 
+    scratch = _scratch_for(spec)
     fd, tmp_name = tempfile.mkstemp(
-        prefix=target.name + ".", dir=str(target.parent)
+        prefix=target.name + ".", dir=scratch or str(target.parent)
     )
     os.close(fd)
     tmp_path = Path(tmp_name)
@@ -546,11 +559,14 @@ def _do_restore(spec: EditSpec) -> EditResult:
         ) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def apply_edit(spec: EditSpec) -> EditResult:
     """Apply an edit (or restore) atomically. Pure-ish: the only side
-    effects are the temp file and the final os.replace.
+    effects are the temp file and the final os.replace. A dry run has none
+    in the target's directory: its temp file lives in a private scratch dir.
 
     Raises SafeEditError on any handled failure; the CLI converts that
     to the historical exit code. Atomicity is unchanged from legacy:
@@ -559,7 +575,6 @@ def apply_edit(spec: EditSpec) -> EditResult:
     the original file is untouched.
     """
     target = Path(spec.path)
-    ensure_parent(target)
     backup_dir = Path(spec.backup_dir) if spec.backup_dir else None
 
     if spec.restore and spec.mode:
@@ -574,16 +589,23 @@ def apply_edit(spec: EditSpec) -> EditResult:
     if spec.restore:
         return _do_restore(spec)
 
+    # Nothing touches the disk until the arguments are known to be good, and
+    # a dry run never creates the parent directories or the target: a missing
+    # target is simulated as empty, in memory.
     if not target.exists():
-        if spec.create:
-            target.touch()
-        else:
+        if not spec.create:
             raise SafeEditError(
                 "target_not_found",
                 "file does not exist; pass --create to create it",
             )
-
-    original = read_text(target)
+        if spec.dry_run:
+            original = ""
+        else:
+            ensure_parent(target)
+            target.touch()
+            original = read_text(target)
+    else:
+        original = read_text(target)
     updated, changed = _apply_mode(spec, original)
 
     if updated == original and not spec.allow_no_change:
@@ -591,8 +613,9 @@ def apply_edit(spec: EditSpec) -> EditResult:
             "no_effective_change", "the edit produced no changes"
         )
 
+    scratch = _scratch_for(spec)
     fd, tmp_name = tempfile.mkstemp(
-        prefix=target.name + ".", dir=str(target.parent)
+        prefix=target.name + ".", dir=scratch or str(target.parent)
     )
     os.close(fd)
     tmp_path = Path(tmp_name)
@@ -602,9 +625,10 @@ def apply_edit(spec: EditSpec) -> EditResult:
     )
     try:
         write_text(tmp_path, updated)
-        meta = copy_metadata(target, tmp_path)
-        result.chown_skipped = meta.chown_skipped
-        result.chown_skip_reason = meta.chown_skip_reason
+        if target.exists():  # a simulated create has nothing to copy from
+            meta = copy_metadata(target, tmp_path)
+            result.chown_skipped = meta.chown_skipped
+            result.chown_skip_reason = meta.chown_skip_reason
 
         validator_argv = build_validator(
             spec.validator, spec.validator_preset, tmp_path
@@ -640,6 +664,8 @@ def apply_edit(spec: EditSpec) -> EditResult:
         ) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
