@@ -28,7 +28,24 @@ from sentinelx_core.policy import Policy
 _SYSTEMCTL_READ_ONLY = frozenset({"status", "is-active", "is-enabled"})
 
 
-def _build_systemctl(action: str, unit: str, requires_sudo: bool) -> str:
+def _user_uid(user: str) -> int | None:
+    """UID of a local user, or None if there is no such user (or no pwd)."""
+    try:
+        import pwd
+
+        return pwd.getpwnam(user).pw_uid
+    except (ImportError, KeyError):
+        return None
+
+
+def _runs_as(user: str) -> bool:
+    uid = _user_uid(user)
+    return uid is not None and uid == os.geteuid()
+
+
+def _build_systemctl(
+    action: str, unit: str, requires_sudo: bool, user: str = "", as_that_user: bool = False
+) -> str:
     """Build the systemctl command, elevating only when the action needs it.
 
     requires_sudo is a property of the SERVICE, and an operator sets it because
@@ -38,7 +55,17 @@ def _build_systemctl(action: str, unit: str, requires_sudo: bool) -> str:
     hosts that had followed our own security advice.
 
     Reading state needs no privileges, so it no longer asks for any.
+
+    A USER unit (`user` set) goes to that user's own manager. When the agent
+    runs as that user, plain `systemctl --user` needs no privileges at all.
+    Otherwise reaching another user's manager needs root even to read it
+    ("Failed to connect to bus: Permission denied"), so it always goes through
+    sudo, with --machine=<user>@.host (systemd 248+).
     """
+    if user:
+        if as_that_user:
+            return f"systemctl --user {action} {unit}"
+        return f"sudo systemctl --user --machine={user}@.host {action} {unit}"
     elevate = requires_sudo and action not in _SYSTEMCTL_READ_ONLY
     prefix = "sudo " if elevate else ""
     return f"{prefix}systemctl {action} {unit}"
@@ -199,7 +226,27 @@ def _build_service_cmd(action: str, spec) -> str:
         return _build_windows_service(action, spec.unit, getattr(spec, "backend", "service"))
     if sys.platform == "darwin":
         return _build_launchctl(action, spec.unit, getattr(spec, "domain", "system"), spec.requires_sudo)
-    return _build_systemctl(action, spec.unit, spec.requires_sudo)
+    user = getattr(spec, "user", "")
+    return _build_systemctl(
+        action, spec.unit, spec.requires_sudo, user, bool(user) and _runs_as(user)
+    )
+
+
+def _service_env(spec) -> dict[str, str] | None:
+    """Environment for `systemctl --user` run as the unit's own user.
+
+    A service process doesn't get XDG_RUNTIME_DIR, and without it
+    `systemctl --user` can't find the user's manager ("Failed to connect to
+    bus: No medium found"). Only for the own-user mode; everything else runs
+    with the agent's environment as before.
+    """
+    if sys.platform in ("win32", "darwin"):
+        return None
+    user = getattr(spec, "user", "")
+    if not user or not _runs_as(user):
+        return None
+    runtime = f"/run/user/{os.geteuid()}"
+    return {"XDG_RUNTIME_DIR": runtime, "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus"}
 
 
 # SCM-recovery self-kill (issue #19, underprivileged / LocalService case). On a
@@ -545,8 +592,18 @@ def make_service_handler(policy: Policy):
             if backend == "task":
                 return await _windows_task_restart(spec.unit)
 
+        user = getattr(spec, "user", "")
+        if user and sys.platform not in ("win32", "darwin") and _user_uid(user) is None:
+            raise HandlerError(
+                "service_user_not_found",
+                f"service '{service}' is declared as a systemd user unit of "
+                f"'{user}', but there is no user '{user}' on this host. Fix the "
+                f"'user:' of that service via {_pg.edit_config_via()} (with the "
+                f"operator's approval), then {_pg.reload_agent()}.",
+                details={"service": service, "user": user},
+            )
         cmd = _build_service_cmd(action, spec)
-        return await run_shell_split(cmd, timeout=30.0)
+        return await run_shell_split(cmd, timeout=30.0, env=_service_env(spec))
 
     return handle_service
 

@@ -3,6 +3,28 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.12 - systemd user units in `services` - 2026-10-10
+
+An app that runs as its own user (~/.config/systemd/user) couldn't be managed: `services`
+always ran `systemctl <action> <unit>` against the system manager (sxrep_01JGTNPRKSS8).
+
+- `services.<name>.user` (Linux; ignored on macOS/Windows, like domain/backend): the unit is
+  managed with `systemctl --user` against that user's manager.
+  - The agent runs as that user: plain `systemctl --user <action> <unit>`, no privileges, with
+    XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS set from the user's uid (a service process
+    has neither, and without them: 'Failed to connect to bus: No medium found').
+  - Another user: `sudo systemctl --user --machine=<user>@.host <action> <unit>`, always with
+    sudo, reads included ('Permission denied' without root). systemd 248+.
+  - Checked on systemd 255 before writing: both modes work, and the two failures above are
+    exactly what happens without the env / without root.
+- `user` is interpolated into a shell command, so it must match [A-Za-z_][A-Za-z0-9_.-]{0,31};
+  otherwise THAT service is skipped with a warning (not downgraded to a system unit of the same
+  name). A user that doesn't exist on the host -> service_user_not_found.
+- capabilities: `user` shown for user units only. config.example.yaml: commented example.
+- tests/test_service_user_units.py (17): both modes, sudo on reads, env, unknown user, unsafe
+  names incl. 'alice; rm -rf /' and '$(id)', system units unchanged, capabilities. 5 sabotages
+  caught. Full suite on Python 3.12 and 3.14. No protocol or hub change needed.
+
 ## 0.23.11 - A directory the agent can't enter is 'permission denied' again on Python 3.14 - 2026-10-09
 
 On Python 3.14, read and list reported 'path does not exist' for files under a directory the

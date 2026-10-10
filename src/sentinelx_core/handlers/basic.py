@@ -203,6 +203,7 @@ def make_capabilities_handler(
                     "actions": list(spec.actions),
                     "requires_sudo": spec.requires_sudo,
                     "description": spec.description,
+                    **({"user": spec.user} if getattr(spec, "user", "") else {}),
                 }
                 for name, spec in policy.services.items()
             },

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +55,11 @@ def default_upload_base() -> Path:
 
 
 
+# A POSIX-ish user name for a systemd user unit. It is interpolated into a shell
+# command, so nothing outside this set is accepted.
+_SERVICE_USER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}")
+
+
 @dataclass(frozen=True)
 class ServiceSpec:
     """Allowed actions for a systemd service."""
@@ -68,6 +74,11 @@ class ServiceSpec:
     # "task" (a per-user Scheduled Task via schtasks -- the no-admin user-mode
     # install). Ignored on Linux/macOS.
     backend: str = "service"
+    # Linux only: the owner of a systemd USER unit (~/.config/systemd/user),
+    # managed with `systemctl --user` against that user's manager instead of
+    # the system's. Empty (the default) = a system unit. Ignored on macOS and
+    # Windows, like domain/backend are elsewhere. (sxrep_01JGTNPRKSS8)
+    user: str = ""
 
 
 @dataclass(frozen=True)
@@ -434,6 +445,15 @@ class Policy:
         services: dict[str, ServiceSpec] = {}
         for name, meta in (data.get("services") or {}).items():
             actions = tuple(meta.get("actions") or [])
+            user = str(meta.get("user") or "").strip()
+            if user and not _SERVICE_USER_RE.fullmatch(user):
+                # Skipped, not downgraded to a system unit: managing a system
+                # unit of the same name is worse than managing nothing, and the
+                # user name ends up in a shell command.
+                logger.warning(
+                    "services: %s has an invalid user %r; skipped", name, user
+                )
+                continue
             services[name] = ServiceSpec(
                 unit=meta.get("unit", name),
                 actions=actions,
@@ -441,6 +461,7 @@ class Policy:
                 description=meta.get("description", ""),
                 domain=meta.get("domain", "system"),
                 backend=meta.get("backend", "service"),
+                user=user,
             )
 
         # ── local_apis ────────────────────────────────────────────────────

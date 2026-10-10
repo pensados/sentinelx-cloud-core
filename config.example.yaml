@@ -241,6 +241,15 @@ services:
     actions: [status, start, stop, restart, reload]
   docker:
     actions: [status, restart]
+  # A systemd USER unit (Linux, ~/.config/systemd/user): an app that runs as
+  # its own user, without root. With `user:` the agent talks to that user's
+  # manager (`systemctl --user`). If the agent itself runs as that user, no
+  # privileges are needed. Otherwise it uses
+  # `sudo systemctl --user --machine=<user>@.host <action> <unit>`, which needs
+  # root (a sudoers rule for exactly those commands) and systemd 248+.
+  # myapp.service:
+  #   user: alice
+  #   actions: [status, restart]
   # The agent itself, so the LLM can reload policy after editing this
   # file. Restart re-reads /etc/sentinelx/config.yaml from scratch
   # (no SIGHUP-style reload). Conservative actions:
