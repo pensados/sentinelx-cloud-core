@@ -3,6 +3,25 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.13 - list and search no longer report an unreadable directory as empty - 2026-10-10
+
+sxrep_919SQBDT9XD4 (severity high): sentinel_list returned ok, total 0, entries [] for a
+directory the agent's OS user couldn't read, while root saw files in it; an 'empty' that isn't
+can lead to deleting data. Reproduced on Python 3.12 and 3.14 as an unprivileged user, with all
+three permission cases: --- and --x (iterdir raises; the 'skip it silently, the parent already
+showed it' branch also applied to the requested directory itself) and r-- (the sort key's
+is_dir() raises on a directory that can't be entered, and children whose lstat fails were
+dropped). search had the same silences: 'no matches' for files it never opened.
+
+- The requested directory can't be read -> permission_denied ('contents are unknown, not empty').
+- r-- (names visible, details not) -> the names are listed with type 'unknown'.
+- Unreadable subdirectories in a recursive list/search, and files search can't open -> the
+  result carries partial: true, unreadable_dirs (first 50) and a note that absence there is
+  not proof. An entry that vanished between listing and lstat (ENOENT) is still just skipped.
+- search's defensive 'except Exception' re-raises HandlerError, or it would swallow the error.
+- tests/test_list_search_unreadable.py (9, skipped as root): list/search on ---/--x, r--,
+  nested unreadable dirs and files, and unchanged output for readable trees. 4 sabotages caught.
+
 ## 0.23.12 - systemd user units in `services` - 2026-10-10
 
 An app that runs as its own user (~/.config/systemd/user) couldn't be managed: `services`

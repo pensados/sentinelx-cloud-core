@@ -185,6 +185,55 @@ def _resolve_or_reject(policy: Policy, path: str) -> Path:
     return resolved
 
 
+def _lstat_or_err(p: Path) -> tuple[os.stat_result | None, int | None]:
+    """lstat() plus the errno when it fails, to tell "gone" from "can't look"."""
+    try:
+        return p.lstat(), None
+    except OSError as exc:
+        return None, exc.errno
+
+
+def _is_dir_safe(p: Path) -> bool:
+    """is_dir() that never raises (it does on a directory we can't enter)."""
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+# How many unreadable directories a partial result names explicitly.
+_UNREADABLE_CAP = 50
+
+
+def _cannot_list_error(path_str: str) -> HandlerError:
+    """The requested directory itself can't be read: its contents are unknown.
+
+    list and search used to return ok with nothing in it, which reads as
+    "empty" / "no matches" and can lead to deleting data (sxrep_919SQBDT9XD4).
+    """
+    return HandlerError(
+        "permission_denied",
+        f"cannot list {path_str!r}: the agent's OS user can reach this directory "
+        "but has no permission to read its contents, so they are unknown (not "
+        "empty). read/list/search never use sudo by design. Ask the operator to "
+        "grant read+execute on the directory, or run the agent as a user that can "
+        "access it.",
+    )
+
+
+def _partial_note(dirs: int, items: int, item_word: str, absence: str) -> str:
+    parts = []
+    if dirs:
+        parts.append(f"{dirs} director{'y' if dirs == 1 else 'ies'} (see unreadable_dirs)")
+    if items:
+        parts.append(f"{items} {item_word}{'' if items == 1 else 's'}")
+    return (
+        "Partial result: the agent's OS user could not read "
+        + " and ".join(parts)
+        + f". {absence} Grant read+execute to the agent's user to see everything."
+    )
+
+
 def _stat_safe(p: Path) -> os.stat_result | None:
     """stat() that returns None instead of raising for missing/EACCES."""
     try:
@@ -743,18 +792,25 @@ def make_list_handler(policy: Policy):
                     "truncated": True, "truncated_reason": "time_budget",
                     "not_started": True, "note": _NOT_STARTED_NOTE}
 
-        def add_entry(entry_path: Path, depth_remaining: int) -> bool:
+        unreadable_dirs: list[str] = []
+        uninspectable = 0
+
+        def add_entry(entry_path: Path, depth_remaining: int, is_root: bool = False) -> bool:
             """Walk one level. Returns True if cap reached (stop)."""
-            nonlocal truncated, timed_out
+            nonlocal truncated, timed_out, uninspectable
             try:
                 children = sorted(
                     entry_path.iterdir(),
-                    key=lambda p: (not p.is_dir(), p.name.lower()),
+                    key=lambda p: (not _is_dir_safe(p), p.name.lower()),
                 )
             except PermissionError:
-                # Can't list this dir — skip it silently (the parent
-                # already showed it as type=dir; the LLM can ask for it
-                # specifically if needed).
+                # The requested directory itself: its contents are unknown,
+                # which must not come back as an empty listing. A nested one
+                # is recorded so the result says it is partial (it used to be
+                # skipped silently).
+                if is_root:
+                    raise _cannot_list_error(path_str)
+                unreadable_dirs.append(str(entry_path.relative_to(resolved)))
                 return False
             except OSError:
                 return False
@@ -766,11 +822,25 @@ def make_list_handler(policy: Policy):
                 name = child.name
                 if not show_hidden and name.startswith("."):
                     continue
-                if name in _ALWAYS_SKIP_DIRS and child.is_dir():
+                if name in _ALWAYS_SKIP_DIRS and _is_dir_safe(child):
                     continue
 
-                child_st = _stat_safe(child)
+                child_st, err = _lstat_or_err(child)
                 if child_st is None:
+                    if err in (errno.ENOENT, errno.ENOTDIR):
+                        continue  # gone between listing and stat
+                    # Listed but not inspectable: typically a directory the
+                    # agent's user can read but not enter (r without x). The
+                    # name is reported so "empty" keeps meaning empty.
+                    uninspectable += 1
+                    if glob_pat is None or fnmatch.fnmatch(name, glob_pat):
+                        entries.append({
+                            "name": str(child.relative_to(resolved)),
+                            "type": "unknown", "size": None, "mtime": None,
+                        })
+                        if len(entries) >= cap:
+                            truncated = True
+                            return True
                     continue
 
                 # Glob match applies to the basename only.
@@ -795,7 +865,7 @@ def make_list_handler(policy: Policy):
 
             return False
 
-        add_entry(resolved, depth)
+        add_entry(resolved, depth, is_root=True)
 
         out = {
             "ok": True,
@@ -812,6 +882,15 @@ def make_list_handler(policy: Policy):
             )
         elif truncated:
             out["truncated_reason"] = "max_entries"
+        if unreadable_dirs or uninspectable:
+            out["partial"] = True
+            if unreadable_dirs:
+                out["unreadable_dirs"] = unreadable_dirs[:_UNREADABLE_CAP]
+            note = _partial_note(
+                len(unreadable_dirs), uninspectable, "entry shown as type unknown",
+                "A directory or entry missing from this listing may still exist.",
+            )
+            out["note"] = f"{out['note']} {note}" if out.get("note") else note
         return out
 
     async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
@@ -923,6 +1002,8 @@ def make_search_handler(policy: Policy):
         files_searched = 0
         truncated = False
         timed_out = False
+        unreadable_dirs: list[str] = []
+        unreadable_files = 0
         if deadline is None:
             deadline = _scan_deadline()
         if time.monotonic() > deadline:
@@ -933,23 +1014,31 @@ def make_search_handler(policy: Policy):
 
         def walk(p: Path) -> bool:
             """Walk a directory or single file. Returns True when cap reached."""
-            nonlocal files_searched, truncated, timed_out
+            nonlocal files_searched, truncated, timed_out, unreadable_files
 
             if time.monotonic() > deadline:
                 timed_out = True
                 return True
             try:
-                p_st = _stat_safe(p)
+                p_st, err = _lstat_or_err(p)
                 if p_st is None:
+                    if err not in (errno.ENOENT, errno.ENOTDIR):
+                        unreadable_files += 1  # listed but not inspectable
                     return False
 
                 if stat.S_ISDIR(p_st.st_mode):
                     try:
                         children = sorted(p.iterdir(), key=lambda c: c.name)
-                    except (PermissionError, OSError):
+                    except PermissionError:
+                        # Same rule as list: unreadable is not "no matches".
+                        if p == resolved:
+                            raise _cannot_list_error(path_str)
+                        unreadable_dirs.append(str(p.relative_to(resolved)))
+                        return False
+                    except OSError:
                         return False
                     for child in children:
-                        if child.name in _ALWAYS_SKIP_DIRS and child.is_dir():
+                        if child.name in _ALWAYS_SKIP_DIRS and _is_dir_safe(child):
                             continue
                         if walk(child):
                             return True
@@ -1008,9 +1097,14 @@ def make_search_handler(policy: Policy):
                             if len(matches) >= cap:
                                 truncated = True
                                 return True
-                except (PermissionError, OSError):
+                except PermissionError:
+                    unreadable_files += 1
+                    return False
+                except OSError:
                     return False
                 return False
+            except HandlerError:
+                raise  # the requested directory itself is unreadable
             except Exception:
                 # Defensive — never let a single weird file kill the whole
                 # search. Skip and continue.
@@ -1035,6 +1129,15 @@ def make_search_handler(policy: Policy):
             )
         elif truncated:
             out["truncated_reason"] = "max_results"
+        if unreadable_dirs or unreadable_files:
+            out["partial"] = True
+            if unreadable_dirs:
+                out["unreadable_dirs"] = unreadable_dirs[:_UNREADABLE_CAP]
+            note = _partial_note(
+                len(unreadable_dirs), unreadable_files, "file",
+                "Matches there, if any, are not included: no match is not proof of absence.",
+            )
+            out["note"] = f"{out['note']} {note}" if out.get("note") else note
         return out
 
     async def handle_search(payload: dict[str, Any]) -> dict[str, Any]:
