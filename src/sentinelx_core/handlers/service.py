@@ -572,7 +572,7 @@ def make_service_handler(policy: Policy):
                 "service_not_allowed",
                 f"service '{service}' isn't registered in this agent's "
                 "policy. If it's safe to manage here, add it with the "
-                f"operator's approval, in three steps: (1) call {_pg.edit_config_via()}, "
+                f"operator's approval, in three steps: (1) {_pg.config_edit_step()}, "
                 f"adding an entry under the 'services:' map for '{service}' "
                 "with an 'actions:' list (e.g. actions: [status, restart, "
                 "reload]; list only what you want to allow, and avoid 'stop' "

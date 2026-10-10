@@ -72,6 +72,17 @@ logger = logging.getLogger(__name__)
 UNDISABLEABLE_OPS = frozenset({"ping", "capabilities", "state", "help"})
 
 
+def _config_is_writable(policy, config_path) -> bool | None:
+    """Can sentinel_edit write the agent's own config? The same check edit uses."""
+    if not config_path:
+        return None
+    # resolve_path returns None (it doesn't raise) when the path isn't allowed.
+    try:
+        return policy.resolve_path(str(config_path), need_write=True) is not None
+    except Exception:  # noqa: BLE001 -- any refusal means edit would refuse too
+        return False
+
+
 def build_registry(
     config_path: Path | None = None,
     policy: Policy | None = None,
@@ -98,6 +109,7 @@ def build_registry(
     _self_svc = policy.services.get(_pg.SERVICE_KEY)
     _pg.set_backend(getattr(_self_svc, "backend", "service") if _self_svc else "service")
     _pg.set_config_path(config_path)
+    _pg.set_config_writable(_config_is_writable(policy, config_path))
 
     upload_base = policy.upload_base
 

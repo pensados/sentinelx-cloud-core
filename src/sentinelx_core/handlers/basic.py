@@ -417,7 +417,7 @@ def make_help_handler(policy: Policy):
                     "then reload. Or run the add_service playbook."
                 ),
                 "how_to_edit_config": (
-                    f"Config edits need the operator's approval: use {_pg.edit_config_via()}, "
+                    f"Config edits need the operator's approval: {_pg.config_edit_step()}, "
                     f"back up first, then {_pg.reload_agent()} (or use the "
                     "sync_sentinelx_config playbook)."
                 ),

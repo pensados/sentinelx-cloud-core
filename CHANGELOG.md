@@ -3,6 +3,26 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.14 - Config-edit guidance that works on the host it's given on - 2026-10-10
+
+sxrep_092628RDH38B: service_not_allowed, exec's 'not in allowlist', fileops' path_not_allowed
+and the capabilities playbook hints told the assistant to 'call sentinel_edit on
+/etc/sentinelx/config.yaml with sudo=true'. Since 0.11.18 edit refuses a path that isn't under
+an rw file_ops path, even with sudo, which is the default Linux install: the assistant followed
+the steps and got path_not_allowed. The reload step also named 'sentinel_service
+action=restart', a retired tool.
+
+- build_registry records whether the agent's own config is writable, with the check edit uses
+  (Policy.resolve_path(need_write=True); it returns None, it doesn't raise). When it isn't,
+  the guidance says to ask the operator to edit the file on the host from a terminal or the
+  dashboard's 'Edit config' if the host allows it. When it is, sentinel_edit as before; when
+  unknown (no policy), as before.
+- platform_guidance: config_edit_step() (an instruction) next to edit_config_via() (a means),
+  so both read right; reload_agent() names sentinel_restart.
+- tests/test_config_edit_guidance.py (5): a real build_registry with and without an rw config,
+  the service and exec messages, the tool name. 3 sabotages caught, including the first draft's
+  'no exception = writable', found reading resolve_path before the tests ran.
+
 ## 0.23.13 - list and search no longer report an unreadable directory as empty - 2026-10-10
 
 sxrep_919SQBDT9XD4 (severity high): sentinel_list returned ok, total 0, entries [] for a

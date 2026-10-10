@@ -104,7 +104,7 @@ def _classify_rejection(command: str) -> tuple[str, str]:
         f"command not in allowlist: {first_word}",
         f"the prefix '{first_word}' isn't in the agent's allowed_commands. "
         "If it's safe and routine, you can add it with the operator's "
-        f"approval, in three steps: (1) call {_pg.edit_config_via()}, "
+        f"approval, in three steps: (1) {_pg.config_edit_step()}, "
         f"inserting a new line '  - {first_word}' under the "
         "'allowed_commands:' list (anchor on an existing '  - ...' entry so "
         f"the YAML stays valid); (2) {_pg.reload_agent()}; (3) confirm with "

@@ -75,15 +75,47 @@ LOGS_HINT = _pick(
 HOST_KIND = _pick(_WIN_SVC_HOST_KIND, "macOS host", "Linux host")
 
 
+# Whether the agent's own config file is under an rw file_ops path, i.e. whether
+# sentinel_edit can write it at all (since 0.11.18 edit refuses a non-rw path even
+# with sudo). Set once at startup by build_registry(); None = unknown (no policy,
+# e.g. tests), which keeps the sentinel_edit guidance. (sxrep_092628RDH38B: on a
+# default Linux install the guidance sent assistants to an edit that always fails.)
+CONFIG_WRITABLE: bool | None = None
+
+
+def set_config_writable(writable: bool | None) -> None:
+    global CONFIG_WRITABLE
+    CONFIG_WRITABLE = writable
+
+
 def edit_config_via() -> str:
-    """e.g. "sentinel_edit on <config> with validator_preset='yaml'"."""
+    """The means, to follow 'via' (e.g. "sentinel_edit on <config> with ...")."""
+    if CONFIG_WRITABLE is False:
+        return (
+            f"the operator editing {CONFIG_PATH} on the host from a terminal, or from "
+            "the dashboard's 'Edit config' if this host allows it (sentinel_edit "
+            "can't write it here: it isn't under an rw file_ops path)"
+        )
     return f"sentinel_edit on {CONFIG_PATH} with {_EDIT_SUDO}validator_preset='yaml'"
+
+
+def config_edit_step() -> str:
+    """The step, as an instruction (e.g. "call sentinel_edit on <config> ...")."""
+    if CONFIG_WRITABLE is False:
+        return (
+            f"ask the operator to edit {CONFIG_PATH} on the host from a terminal, or "
+            "from the dashboard's 'Edit config' if this host allows it (sentinel_edit "
+            "can't write it here: it isn't under an rw file_ops path)"
+        )
+    return f"call {edit_config_via()}"
 
 
 def reload_agent() -> str:
     """How to reload the policy after editing it."""
+    # sentinel_restart is the tool; the old 'sentinel_service action=restart'
+    # name was retired and can't be called.
     return (
-        f"reload the agent (sentinel_service action='restart' service='{SERVICE_KEY}', "
+        f"reload the agent (sentinel_restart with service='{SERVICE_KEY}', "
         f"or run '{MANUAL_RESTART}' on a terminal)"
     )
 
