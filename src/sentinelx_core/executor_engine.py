@@ -73,6 +73,49 @@ async def _stop_process_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
+async def communicate_partial(
+    proc: asyncio.subprocess.Process, timeout: float | None
+) -> tuple[bytes, bytes, bool]:
+    """proc.communicate() under a timeout that keeps what was already read.
+
+    communicate() inside wait_for() threw away everything a process had written
+    when the timeout hit, so a script that printed its progress (even with
+    flush) came back as a bare "Timeout" (sxrep_AY8JPBQKSAXR). Both streams are
+    read as they arrive; returns (stdout, stderr, timed_out). The caller still
+    owns stopping the process tree on a timeout.
+    """
+    out, err = bytearray(), bytearray()
+
+    async def pump(stream, buf: bytearray) -> None:
+        if stream is None:
+            return
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                return
+            buf.extend(chunk)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(pump(proc.stdout, out), pump(proc.stderr, err), proc.wait()),
+            timeout=timeout,
+        )
+        return bytes(out), bytes(err), False
+    except TimeoutError:
+        return bytes(out), bytes(err), True
+
+
+def timeout_text(partial: str) -> str:
+    """The timeout marker, plus whatever the process wrote before it, if anything.
+
+    It still starts with the marker hub and assistants already recognise.
+    """
+    partial = (partial or "").strip()
+    if not partial:
+        return "⏱️ Timeout"
+    return f"⏱️ Timeout. Output written before the timeout:\n{partial}"
+
+
 def _shell_argv(cmd: str) -> list[str]:
     """Build the argv that runs `cmd` through the platform's default shell.
 
@@ -185,18 +228,22 @@ async def run_shell(
             ),
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError:
+            stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
+        except asyncio.CancelledError:
             await _stop_process_tree(proc)
+            raise
+        if timed_out:
+            await _stop_process_tree(proc)
+            partial = "\n".join(
+                t for t in (stdout_b.decode(errors="replace").strip(),
+                            stderr_b.decode(errors="replace").strip()) if t
+            )
             return {
-                "output": "⏱️ Timeout",
+                "output": timeout_text(partial),
                 "duration": round(time.time() - start, 2),
                 "returncode": -1,
                 "timed_out": True,
             }
-        except asyncio.CancelledError:
-            await _stop_process_tree(proc)
-            raise
 
         stdout = stdout_b.decode(errors="replace").strip()
         stderr = stderr_b.decode(errors="replace").strip()
@@ -249,18 +296,19 @@ async def run_shell_split(
             ),
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError:
-            await _stop_process_tree(proc)
-            return {
-                "stdout": "",
-                "stderr": "⏱️ Timeout",
-                "duration": round(time.time() - start, 2),
-                "returncode": -1,
-            }
+            stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
         except asyncio.CancelledError:
             await _stop_process_tree(proc)
             raise
+        if timed_out:
+            await _stop_process_tree(proc)
+            return {
+                "stdout": stdout_b.decode(errors="replace").strip(),
+                "stderr": timeout_text(stderr_b.decode(errors="replace")),
+                "duration": round(time.time() - start, 2),
+                "returncode": -1,
+                "timed_out": True,
+            }
 
         return {
             "stdout": stdout_b.decode(errors="replace"),

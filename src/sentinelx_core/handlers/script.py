@@ -45,6 +45,8 @@ real Windows PowerShell 5.1 host.
 from __future__ import annotations
 
 import asyncio
+
+from sentinelx_core.executor_engine import communicate_partial, timeout_text
 import logging
 import os
 import shutil
@@ -483,9 +485,9 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                         **extra,
                     ),
                 )
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
+                stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
+                if timed_out:
+                    raise asyncio.TimeoutError
                 returncode = proc.returncode
                 stdout = _decode_output(stdout_b).strip()
                 stderr = _decode_output(stderr_b).strip()
@@ -519,6 +521,9 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             except asyncio.TimeoutError:
                 _kill_process_tree(proc, elevated=use_sudo)
                 await proc.wait()
+                partial = "\n".join(
+                    t for t in (_decode_output(stdout_b).strip(), _decode_output(stderr_b).strip()) if t
+                )
                 return {
                     "ok": False,
                     "interpreter": interpreter,
@@ -526,7 +531,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     "cwd": cwd,
                     "cleanup": cleanup,
                     "command": argv,
-                    "output": "⏱️ Timeout",
+                    "output": timeout_text(partial),
                     "duration": round(time.time() - start, 2),
                     "returncode": -1,
                     "timed_out": True,

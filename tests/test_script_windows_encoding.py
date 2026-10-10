@@ -37,15 +37,35 @@ def policy(tmp_path: Path) -> Policy:
     return p
 
 
+class _FakeStream:
+    """Hands out its bytes once, then EOF, like a pipe that closed."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    async def read(self, n: int = -1) -> bytes:
+        data, self._data = self._data, b""
+        return data
+
+
 class _FakeProc:
-    """A child that produced `out` and exited with `returncode`."""
+    """A child that produced `out` and exited with `returncode`.
+
+    Exposes stdout/stderr streams and wait() as a real process does: since
+    0.23.14 the agent reads the streams as they arrive (to keep partial output
+    on a timeout) instead of calling communicate().
+    """
 
     def __init__(self, out: bytes = b"", err: bytes = b"", returncode: int = 0):
         self._out, self._err = out, err
+        self.stdout, self.stderr = _FakeStream(out), _FakeStream(err)
         self.returncode = returncode
 
     async def communicate(self):
         return self._out, self._err
+
+    async def wait(self):
+        return self.returncode
 
     def kill(self):  # pragma: no cover - only used on the timeout path
         pass

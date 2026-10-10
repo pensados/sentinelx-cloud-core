@@ -3,7 +3,25 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
-## 0.23.14 - Config-edit guidance that works on the host it's given on - 2026-10-10
+## 0.23.14 - Partial output on timeouts; config-edit guidance that works on the host - 2026-10-10
+
+### What a process wrote before its timeout comes back with it (sxrep_AY8JPBQKSAXR)
+
+exec (run_shell), the service ops (run_shell_split) and script_run ran communicate() inside
+wait_for(): on a timeout everything already written was discarded and only '⏱️ Timeout' came
+back, even from a script that flushed its progress precisely to leave a trace.
+
+- executor_engine.communicate_partial() reads stdout and stderr as they arrive and returns
+  what it has on a timeout; the caller still stops the process tree. timeout_text() keeps the
+  marker first ('⏱️ Timeout. Output written before the timeout:' + the partial output), and is
+  exactly '⏱️ Timeout' when nothing was written. run_shell_split now also says timed_out.
+- Agent-only: the hub forwards output as is (jobs store it; its timeout guidance adds a
+  separate field; the 0.56.39 spawn check keys on the '❌ Error:' marker, not this one).
+- tests/test_partial_output_on_timeout.py (5, real processes); 3 sabotages caught. The fake
+  process in test_script_windows_encoding.py gained stdout/stderr/wait() like a real one
+  (the full suite caught that it only had communicate()).
+
+### Config-edit guidance that works on the host it's given on (sxrep_092628RDH38B)
 
 sxrep_092628RDH38B: service_not_allowed, exec's 'not in allowlist', fileops' path_not_allowed
 and the capabilities playbook hints told the assistant to 'call sentinel_edit on
