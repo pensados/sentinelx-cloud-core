@@ -113,3 +113,26 @@ async def test_capabilities_show_the_user_only_for_user_units(tmp_path):
     caps = await make_capabilities_handler(pol, None)({"detail": "full"})
     assert caps["services"]["hermes.service"]["user"] == "alice"
     assert "user" not in caps["services"]["nginx"]
+
+
+# --- discoverability --------------------------------------------------------------------
+# An assistant learns how to declare a service from service_not_allowed, and then
+# follows it. On Linux it has to mention user units, or a user unit gets declared
+# as a system one.
+
+async def test_service_not_allowed_mentions_user_units_on_linux(tmp_path, run, monkeypatch):
+    monkeypatch.setattr(svc.sys, "platform", "linux")
+    pol = _policy(tmp_path, "  nginx:\n    actions: [status]\n")
+    with pytest.raises(HandlerError) as exc:
+        await make_service_handler(pol)({"service": "hermes-gateway.service", "action": "status"})
+    assert exc.value.code == "service_not_allowed"
+    assert "systemctl --user" in str(exc.value) and "user: <its owner>" in str(exc.value)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+async def test_but_not_where_user_is_ignored(tmp_path, run, monkeypatch, platform):
+    monkeypatch.setattr(svc.sys, "platform", platform)
+    pol = _policy(tmp_path, "  nginx:\n    actions: [status]\n")
+    with pytest.raises(HandlerError) as exc:
+        await make_service_handler(pol)({"service": "x", "action": "status"})
+    assert "systemctl --user" not in str(exc.value)

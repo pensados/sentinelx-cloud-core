@@ -21,6 +21,10 @@ always ran `systemctl <action> <unit>` against the system manager (sxrep_01JGTNP
   otherwise THAT service is skipped with a warning (not downgraded to a system unit of the same
   name). A user that doesn't exist on the host -> service_user_not_found.
 - capabilities: `user` shown for user units only. config.example.yaml: commented example.
+- service_not_allowed (Linux) now says to add `user: <owner>` for a systemd user unit: it is
+  the message an assistant follows to declare a missing service, and without the hint it would
+  declare a user unit as a system one. Not shown on macOS/Windows, where `user` is ignored.
+  Existing hosts keep their config.yaml on update, so this message is how they learn it.
 - tests/test_service_user_units.py (17): both modes, sudo on reads, env, unknown user, unsafe
   names incl. 'alice; rm -rf /' and '$(id)', system units unchanged, capabilities. 5 sabotages
   caught. Full suite on Python 3.12 and 3.14. No protocol or hub change needed.

@@ -559,6 +559,15 @@ def make_service_handler(policy: Policy):
 
         spec = policy.get_service(service)
         if spec is None:
+            # The next step an assistant takes is to declare the service as this
+            # message says. A user unit declared without `user:` would point at
+            # the system manager, the wrong supervisor (sxrep_01JGTNPRKSS8).
+            user_hint = (
+                "; if it is a systemd USER unit (listed by `systemctl --user`, "
+                "defined under ~/.config/systemd/user), also add 'user: <its "
+                "owner>', or the agent will look for a system unit instead"
+                if sys.platform not in ("win32", "darwin") else ""
+            )
             raise HandlerError(
                 "service_not_allowed",
                 f"service '{service}' isn't registered in this agent's "
@@ -567,7 +576,7 @@ def make_service_handler(policy: Policy):
                 f"adding an entry under the 'services:' map for '{service}' "
                 "with an 'actions:' list (e.g. actions: [status, restart, "
                 "reload]; list only what you want to allow, and avoid 'stop' "
-                "unless the operator wants the service stoppable); (2) "
+                f"unless the operator wants the service stoppable{user_hint}); (2) "
                 f"{_pg.reload_agent()}; (3) confirm with the capabilities op "
                 f"that '{service}' now appears under services.",
                 details={"service": service, "available": sorted(policy.services.keys())},
