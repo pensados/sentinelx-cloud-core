@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.17 - A finished upload or transfer lands across filesystems - 2026-10-11
+
+sxrep_XW9FTRHAH0H7: a transfer to a WSL host writing under /mnt/... moved every byte and then
+failed with '[Errno 18] Invalid cross-device link'. The finished file is assembled in the staging
+area under upload_base and renamed into place, and a rename can't cross filesystems (WSL drives,
+a second disk, bind mounts).
+
+- handlers/upload._finalize(): rename as before; on EXDEV, copy into a temp file in the
+  destination's directory, fsync, and rename that, so the final name never points at a
+  half-written file. Other errors are raised unchanged. Used by upload_complete (chunked uploads
+  and cross-host transfers) and upload_file.
+- tests/test_upload_cross_device.py (3), rename simulated to fail with EXDEV. 1 sabotage caught.
+
 ## 0.23.16 - exec_strict: an allowed command can't carry another one, or a file - 2026-10-11
 
 Security, sxrep_4XCNXWP2A3VY (reported from a careful read of the installed code, no live

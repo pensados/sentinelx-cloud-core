@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
+import os
 import ipaddress
 import json
 import re
@@ -144,6 +146,35 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> None:
                 "file, use content_base64 or the chunked upload path "
                 "instead.",
             )
+
+
+def _finalize(tmp: Path, dest: Path) -> None:
+    """Move a finished file into place, atomically, across filesystems too.
+
+    A rename can't cross filesystems, and the staging area (under upload_base)
+    often isn't on the destination's: a WSL host writing to /mnt/c, a second
+    disk, a bind mount. Path.replace then fails with EXDEV, "Invalid
+    cross-device link", and a transfer that had moved every byte reported an
+    internal error at the very end (sxrep_XW9FTRHAH0H7). On EXDEV, copy into a
+    temp file in the destination's own directory and rename THAT, so the final
+    name never points at a half-written file. Any other error is raised as is.
+    """
+    try:
+        tmp.replace(dest)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    part = dest.parent / f".{dest.name}.sentinelx-{uuid.uuid4().hex[:8]}.part"
+    try:
+        shutil.copyfile(tmp, part)
+        with open(part, "rb") as fh:
+            os.fsync(fh.fileno())
+        os.replace(part, dest)
+    finally:
+        if part.exists():
+            part.unlink(missing_ok=True)
+    tmp.unlink(missing_ok=True)
 
 
 def _meta_file(upload_dir: Path) -> Path:
@@ -302,7 +333,7 @@ def make_upload_file_handler(policy: Policy, upload_base: Path):
                     trusted_hosts=policy.trusted_fetch_hosts,
                     timeout=policy.file_url_timeout_seconds,
                 )
-            tmp.replace(dest)
+            _finalize(tmp, dest)
         finally:
             if tmp.exists():
                 try:
@@ -540,7 +571,7 @@ def make_upload_complete_handler(upload_base: Path):
                 "replace it.",
             )
 
-        tmp.replace(dest)
+        _finalize(tmp, dest)
         shutil.rmtree(upload_dir, ignore_errors=True)
 
         return {
