@@ -88,6 +88,20 @@ def split_top_level(command: str) -> list[str]:
             buf = []
             i += 2
             continue
+        if ch == "&":
+            # A lone '&' ends a command (it backgrounds it) and starts the next
+            # one: `allowed & id` ran id unchecked (sxrep_4XCNXWP2A3VY). It is
+            # part of a redirection in &> / >& / <&, which are not separators.
+            nxt = command[i + 1] if i + 1 < n else ""
+            prev = buf[-1] if buf else ""
+            if nxt == ">" or prev in "<>":
+                buf.append(ch)
+                i += 1
+                continue
+            out.append("".join(buf))
+            buf = []
+            i += 1
+            continue
         if ch in ";|":
             out.append("".join(buf))
             buf = []
@@ -152,7 +166,88 @@ def has_substitution(command: str) -> str | None:
             return "$("
         if ch == "`":
             return "`"
+        # Process substitution runs its command too, and only outside quotes.
+        if command.startswith("<(", i) or command.startswith(">(", i):
+            return command[i:i + 2]
         i += 1
+    return None
+
+
+def control_character(command: str) -> str | None:
+    """The first control character in the command, or None.
+
+    bash treats a newline as a command separator, so `allowed<LF>id` was one
+    segment to split_top_level and two commands to bash (sxrep_4XCNXWP2A3VY).
+    No legitimate one-line command needs a control character; tab is allowed.
+    """
+    for ch in command:
+        if (ord(ch) < 32 and ch != "\t") or ord(ch) == 127:
+            return repr(ch)
+    return None
+
+
+_REDIRECT_STOP = set(" \t;|&<>()")
+
+
+def file_redirection(command: str) -> str | None:
+    """The first redirection to or from a file, or None.
+
+    `allowed > file` overwrites any file the agent's user can write, and
+    `allowed | cat < file` reads one through the filter that is only allowed
+    after a pipe precisely so it cannot open files. Strict mode allows what is
+    harmless and common: /dev/null, duplicating a descriptor (2>&1, >&2) and
+    heredocs / herestrings (<<, <<<). Quoted and escaped '<' '>' are data.
+    """
+    i, n = 0, len(command)
+    quote: str | None = None
+    while i < n:
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch not in "<>":
+            i += 1
+            continue
+        start = i
+        if command.startswith("<<", i):           # heredoc / herestring: inline data
+            i += 3 if command.startswith("<<<", i) else 2
+            continue
+        if command.startswith("<(", i) or command.startswith(">(", i):
+            i += 2                                # process substitution: has_substitution's job
+            continue
+        j = i + 1
+        while j < n and command[j] in ">|":      # >> and >|
+            j += 1
+        if j < n and command[j] == "&":
+            k = j + 1
+            while k < n and (command[k].isdigit() or command[k] == "-"):
+                k += 1
+            if k > j + 1:                         # 2>&1, >&2, <&0, 3>&-
+                i = k
+                continue
+            j += 1                                # >&file: both streams to a file
+        while j < n and command[j] in " \t":
+            j += 1
+        k = j
+        while k < n and command[k] not in _REDIRECT_STOP:
+            k += 1
+        target = command[j:k].strip("'\"")
+        if target == "/dev/null":
+            i = k
+            continue
+        return command[start:k].strip() or command[start:start + 1]
     return None
 
 

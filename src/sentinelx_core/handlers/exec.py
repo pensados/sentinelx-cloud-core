@@ -15,7 +15,12 @@ import re
 from typing import Any
 
 from sentinelx_core.executor import HandlerError
-from sentinelx_core.segment_check import has_substitution, unauthorised_segment
+from sentinelx_core.segment_check import (
+    control_character,
+    file_redirection,
+    has_substitution,
+    unauthorised_segment,
+)
 from sentinelx_core.executor_engine import run_shell
 from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
@@ -137,6 +142,20 @@ def make_exec_handler(policy: Policy):
         # through. When the operator has asked for it, every segment answers
         # for itself.
         if policy.exec_strict:
+            # Checked and executed must be the same string: trim it here, once.
+            # A trailing newline is harmless, but an inner one would split it.
+            command = command.strip()
+            control = control_character(command)
+            if control is not None:
+                raise HandlerError(
+                    "command_not_allowed",
+                    f"exec_strict is on for this host, and this command contains "
+                    f"a control character ({control}). The shell treats a newline "
+                    f"as a separator, so an allowed command followed by one would "
+                    f"run whatever comes next without being checked. Send one "
+                    f"command per call, or use script_run for a multi-line script.",
+                    details={"command": command, "control_character": control},
+                )
             substitution = has_substitution(command)
             if substitution is not None:
                 raise HandlerError(
@@ -148,6 +167,19 @@ def make_exec_handler(policy: Policy):
                     f"than answer 'checked' to a question it did not ask. Use "
                     f"script_run for anything that needs one.",
                     details={"command": command, "substitution": substitution},
+                )
+
+            redirection = file_redirection(command)
+            if redirection is not None:
+                raise HandlerError(
+                    "command_not_allowed",
+                    f"exec_strict is on for this host, and this command redirects "
+                    f"to or from a file ({redirection!r}). The allowlist says which "
+                    f"commands may run, not which files they may write or read, so "
+                    f"strict mode only allows /dev/null, 2>&1-style descriptor "
+                    f"copies and heredocs. Use edit or read for files, or "
+                    f"script_run for a workflow.",
+                    details={"command": command, "redirection": redirection},
                 )
 
             offending = unauthorised_segment(policy, command)

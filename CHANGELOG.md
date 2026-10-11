@@ -3,6 +3,27 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.16 - exec_strict: an allowed command can't carry another one, or a file - 2026-10-11
+
+Security, sxrep_4XCNXWP2A3VY (reported from a careful read of the installed code, no live
+exploit): with exec_strict on, a newline after an allowed command passed the per-segment check
+and bash ran the next line as a second command. Checking the rest of bash's grammar the same way
+found more that passed: a lone '&', process substitution <( ) and >( ), and redirections, which
+overwrote any file the agent's user can write, or read one through the `cat` filter that is only
+allowed after a pipe so that it can't open files. Only hosts with exec_strict were affected;
+without it the allowlist is a documented prefix match.
+
+- segment_check.control_character(): newlines, CR and other control characters are refused (the
+  command is trimmed first, and the trimmed string is what runs).
+- split_top_level(): a lone '&' is a separator, so the next command is checked too; &> / >& / <&
+  stay part of their redirection.
+- has_substitution(): <( and >( outside quotes, like $( and backticks.
+- segment_check.file_redirection(): strict mode refuses redirection to or from files; /dev/null,
+  descriptor copies (2>&1, >&2) and heredocs/herestrings stay allowed.
+- tests/test_exec_strict_bypasses.py (27) on the real exec handler: 14 constructs refused with
+  nothing run, 12 legitimate commands run exactly as checked, no change without strict mode.
+  The 27 existing exec_strict tests unchanged. 5 sabotages caught.
+
 ## 0.23.15 - config.yaml is read as UTF-8 on every platform - 2026-10-11
 
 sxrep_XGNWXC3Q6ZVR (+2): an assistant added a file_ops path with a Korean folder name with
