@@ -139,8 +139,8 @@ vector, mitigation, and residual risk.
 | **Attacker** | A1, A2 |
 | **Vector** | Send `exec` op with `command="../../../bin/rm -rf /"` or a command with shell metacharacters meant to escape |
 | **Severity** | High if exploitable |
-| **Mitigation** | `executor.py` rejects anything not in `allowed_commands` (prefix match against tokenized command). `subprocess.run` is called with `shell=False` and an argv list, so shell metacharacters in args are not interpreted. |
-| **Residual risk** | If the operator allowlists `bash` or `sh -c`, the allowlist no longer constrains anything. The defense relies on the operator having a sane allowlist. |
+| **Mitigation** | `exec` runs the command string through a shell (`bash -lc`), and `allowed_commands` is a PREFIX match on that string. So the allowlist constrains what a command may START with, not the whole of what runs: by design it is not a hard sandbox. Operators who need a per-segment boundary turn on `exec_strict`, which splits the command on `;`, `\|`, `&&`, `\|\|` and a lone `&`, refuses newlines/control characters, command and process substitution, and file redirections, and requires every segment to be covered by the allowlist. A fixed set of read-only filters (`grep`, `head`, `sort`, `cut`, ...) is allowed after a pipe, but only without a file-path operand and without their write/execute options; filters that execute or write (`sed`, `awk`, `jq`, `tee`) are not in that set and must be allowlisted by name. `script_run` is the explicit path for a real workflow. |
+| **Residual risk** | `exec` without `exec_strict` is a prefix allowlist over a shell: an operator who relies on it as a sandbox, or who allowlists `bash`/`sh -c`/a shell-invoking interpreter, gets no real boundary. `exec_strict` narrows this to vetted single commands and read-only pipelines; anything beyond that belongs in `script_run` or an OS-level boundary (dedicated user, sudoers, namespaces). SentinelX does not yet offer a shell-free argv exec mode. |
 
 ### 4.2 — Path traversal in upload / edit / mutation target
 

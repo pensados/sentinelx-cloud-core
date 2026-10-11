@@ -37,12 +37,104 @@ from __future__ import annotations
 # while `| cat` cannot reach anything the previous segment did not already hand
 # it.
 READ_ONLY_FILTERS = frozenset({
+    # Only filters that cannot run another program and cannot be made to write a
+    # file through options. sed (s///e, -i, w), awk (system, print >), jq, tee,
+    # sort (-o, --compress-program), xxd (patch) and column were here and are
+    # NOT: they execute or write for some arguments (sxrep_4XCNXWP2A3VY). A
+    # filter that needs those belongs in allowed_commands, named by the operator.
     "head", "tail", "sort", "uniq", "wc", "cut", "tr", "grep", "egrep", "fgrep",
-    "awk", "sed", "jq", "rg", "cat", "tee", "column", "rev", "tac", "nl", "fold",
-    "paste", "join", "comm", "xxd", "base64", "md5sum", "sha256sum", "echo",
-    "printf", "true", "false", "seq", "basename", "dirname", "realpath",
-    "readlink", "date", "wc",
+    "rg", "cat", "rev", "tac", "nl", "fold", "paste", "join", "comm", "column",
+    "base64", "md5sum", "sha256sum", "echo", "printf", "true", "false",
+    "seq", "basename", "dirname", "realpath", "readlink", "date",
 })
+
+# Options on an otherwise read-only filter that make it write or run something.
+# If a filter segment carries one of these, it is not treated as read-only.
+_FILTER_UNSAFE_OPTS = {
+    "sort": ("-o", "--output", "--compress-program", "-S"),
+    "tee":  ("",),      # tee isn't in the set, but guard anyway
+}
+
+# Even a genuine read-only filter must not be handed a file to open: `| cat`
+# reaches nothing, but `| cat /etc/shadow` reads it, which is the whole reason
+# filters are allowed only after a pipe. So a filter segment may carry options
+# and option-values, but not a bare path argument. grep/rg take a PATTERN that
+# is not a file, so one non-option token is allowed for them; the rest take none.
+
+
+# Short options that take a separate value, per filter, so the value isn't read
+# as a file operand. A conservative superset is fine: skipping a token that
+# isn't really a value only risks being LESS strict on the count, and the
+# "looks like a path" test below is the real guard.
+_OPTS_WITH_VALUE = {
+    "head": ("-n", "-c"), "tail": ("-n", "-c"), "cut": ("-d", "-f", "-b", "-c"),
+    "tr": (), "sort": ("-k", "-t", "-S", "-T"), "grep": ("-e", "-f", "-m", "-A", "-B", "-C"),
+    "egrep": ("-e", "-f"), "fgrep": ("-e", "-f"), "rg": ("-e", "-f", "-m"),
+    "fold": ("-w",), "base64": (), "nl": (), "paste": ("-d",), "comm": (), "join": ("-t", "-1", "-2"),
+}
+
+
+def _looks_like_path(tok: str) -> bool:
+    """A token that would name a file to open: absolute, home, or has a slash."""
+    return tok.startswith("/") or tok.startswith("~") or "/" in tok
+
+
+def _filter_reads_a_file(segment: str) -> bool:
+    """True if a (whitelisted) filter segment is handed a file path to open.
+
+    Conservative: only a path-shaped operand counts, so `head -n 5`, `cut -f1`,
+    `grep PATTERN` and `sort -k2` stay allowed, while `cat /etc/shadow`,
+    `grep x /etc/passwd` and `head ../secrets` are refused.
+    """
+    import shlex
+
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        return True  # unparseable: refuse rather than guess
+    if not tokens:
+        return False
+    name = first_word(segment)
+    opts_with_value = _OPTS_WITH_VALUE.get(name, ())
+    # A sort/column carrying a write option was handled by the unsafe-opt check
+    # before this is called; here only the operands matter.
+    operands = []
+    expecting_value = False
+    for tok in tokens[1:]:
+        if expecting_value:
+            expecting_value = False
+            continue
+        if tok == "--":
+            continue
+        if tok.startswith("-") and tok != "-":
+            if "=" not in tok and tok in opts_with_value:
+                expecting_value = True
+            continue
+        operands.append(tok)
+    # grep/rg/fgrep/egrep take a PATTERN operand that is not a file; it may look
+    # path-ish, so allow exactly one non-option operand for them before counting
+    # paths. Every other filter opens any operand, so any path-shaped one counts.
+    if name in ("grep", "egrep", "fgrep", "rg") and operands:
+        operands = operands[1:]
+    return any(_looks_like_path(o) for o in operands)
+
+
+def _filter_has_unsafe_option(segment: str) -> bool:
+    name = first_word(segment)
+    unsafe = _FILTER_UNSAFE_OPTS.get(name)
+    if not unsafe:
+        return False
+    import shlex
+
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        return True
+    for tok in tokens[1:]:
+        head = tok.split("=", 1)[0]
+        if head in unsafe:
+            return True
+    return False
 
 # Executes nothing. Permitted in any position so `cd /srv/app && <allowed>`
 # keeps working; the segments after it are checked as strictly as ever.
@@ -264,6 +356,8 @@ def unauthorised_segment(policy, command: str) -> str | None:
         if word in POSITION_FREE:
             continue
         if index > 0 and word in READ_ONLY_FILTERS:
+            if _filter_reads_a_file(segment) or _filter_has_unsafe_option(segment):
+                return segment      # a filter must not open a file or write one
             continue
         return segment
     return None

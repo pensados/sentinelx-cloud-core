@@ -24,6 +24,24 @@ without it the allowlist is a documented prefix match.
   nothing run, 12 legitimate commands run exactly as checked, no change without strict mode.
   The 27 existing exec_strict tests unchanged. 5 sabotages caught.
 
+### Follow-up on the same report: after-a-pipe filters can't execute, write or open a file
+
+The reporter's second note: READ_ONLY_FILTERS held sed/awk/jq/tee/sort/xxd/column, which for some
+arguments execute (awk system, sed s///e) or write (sed -i, tee, sort -o), and any filter could
+be handed a file to read (| cat /etc/shadow). Measured first: of ~9700 piped commands on
+exec_strict hosts in 14 days, ~6100 use only the safe filters and keep working; ~750 (sed/jq/awk)
+now need an explicit allowlist entry.
+
+- READ_ONLY_FILTERS keeps only filters that cannot run or write; sed/awk/jq/tee removed (add by
+  name to allow). A filter segment is refused if it carries a file-path operand (| cat /etc/shadow,
+  | grep x /etc/passwd) or a write/execute option (sort -o, --compress-program). grep/rg keep
+  their one PATTERN operand.
+- THREAT_MODEL.md 4.1 rewritten to describe the real design (bash -lc + prefix match, what
+  exec_strict does and doesn't cover, no shell-free argv mode yet) instead of the old
+  shell=False/argv text. config.example.yaml names the excluded filters.
+- tests/test_exec_strict_filters.py (24): executors and writers refused, file operands refused,
+  ordinary read-only pipelines unchanged, operator re-allowlisting works. 3 sabotages caught.
+
 ## 0.23.15 - config.yaml is read as UTF-8 on every platform - 2026-10-11
 
 sxrep_XGNWXC3Q6ZVR (+2): an assistant added a file_ops path with a Korean folder name with

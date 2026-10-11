@@ -64,8 +64,11 @@ disabled_ops: []
 #
 # Two things still work, because neither widens what you can reach:
 #   - `cd` in any position, so `cd /srv/app && <allowed>` keeps working;
-#   - read-only filters (head, grep, sort, jq, wc...) AFTER a pipe. Not as the
-#     first segment: `cat /etc/shadow` reads a file, `| cat` cannot.
+#   - read-only filters (head, grep, sort, cut, wc...) AFTER a pipe, with no file
+#     argument and no write/execute options. Not as the first segment:
+#     `cat /etc/shadow` reads a file, `| cat` cannot. Filters that can write or
+#     run something (sed, awk, jq, tee) are NOT free: add them to
+#     allowed_commands by name if you want them.
 #
 # Off by default, deliberately. Measured against real fleet traffic, turning it
 # on unconditionally would reject about a third of chained calls -- `git`,
