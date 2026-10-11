@@ -3,6 +3,23 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.15 - config.yaml is read as UTF-8 on every platform - 2026-10-11
+
+sxrep_XGNWXC3Q6ZVR (+2): an assistant added a file_ops path with a Korean folder name with
+sentinel_edit (which writes UTF-8) and restarted the agent. Policy.from_file read config.yaml
+with path.read_text(), the platform default encoding (cp949 on a Korean Windows, cp1252 on an
+English one), so it raised UnicodeDecodeError, which escaped from_file (only YAML and OS errors
+were caught) and crashed the agent at every start: 174 failed hellos in two hours, service
+'Running', no way to fix it remotely. Any non-ASCII character written by sentinel_edit did this
+on any Windows host.
+
+- policy.read_config_text(): UTF-8 (utf-8-sig, so Notepad's BOM is fine), and the locale
+  encoding only as a fallback for a file saved by an ANSI editor.
+- An undecodable config is now handled like invalid YAML: logged, and the agent starts with an
+  empty policy, connected and diagnosable, instead of crash-looping.
+- tests/test_config_encoding.py (6): Path.read_text patched to decode like Windows (cp949 and
+  cp1252), so the tests fail on the old loader on any OS. 2 sabotages caught.
+
 ## 0.23.14 - Partial output on timeouts; config-edit guidance that works on the host - 2026-10-10
 
 ### What a process wrote before its timeout comes back with it (sxrep_AY8JPBQKSAXR)

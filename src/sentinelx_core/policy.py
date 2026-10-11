@@ -60,6 +60,26 @@ def default_upload_base() -> Path:
 _SERVICE_USER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}")
 
 
+
+def read_config_text(path: Path) -> str:
+    """config.yaml as text: UTF-8 first, the system's encoding only as a fallback.
+
+    sentinel_edit and the installers write UTF-8, but this used path.read_text(),
+    i.e. the platform default: cp949 on a Korean Windows, cp1252 on an English
+    one. One non-ASCII character written by sentinel_edit (a Korean folder name)
+    then raised UnicodeDecodeError, which escaped from_file and crashed the agent
+    at every start, so it could never reconnect to be fixed remotely
+    (sxrep_XGNWXC3Q6ZVR). utf-8-sig also accepts the BOM Notepad may add; the
+    locale encoding covers a file saved by an editor that writes the ANSI page.
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        import locale
+
+        return raw.decode(locale.getpreferredencoding(False) or "utf-8")
+
 @dataclass(frozen=True)
 class ServiceSpec:
     """Allowed actions for a systemd service."""
@@ -351,8 +371,8 @@ class Policy:
             return cls.empty()
 
         try:
-            data = yaml.safe_load(path.read_text()) or {}
-        except (yaml.YAMLError, OSError) as exc:
+            data = yaml.safe_load(read_config_text(path)) or {}
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             logger.error("policy_config_invalid", extra={"path": str(path), "error": str(exc)})
             return cls.empty()
 
