@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.19 - The python edit validator writes nothing next to the file - 2026-10-15
+
+sxrep_N318DCSMDYWE: sentinel_edit with validator_preset='python' ran py_compile on the candidate,
+which sits next to the target, so Python tried to save bytecode into that directory's __pycache__.
+Where the agent can't write there (/opt/dunia-native/state) a valid edit was rejected with Errno 13;
+where it can, stray <name>.cpython-XY.pyc files were left behind.
+
+- vendored/pensa_safe_edit.build_validator_preset('python'): runs compile(source, path, 'exec') in a
+  child Python instead of py_compile: the same checks ('return' outside a function included), no
+  bytecode written.
+- tests/test_python_validator_writes_nothing.py (5): valid code passes in a read-only directory with
+  no __pycache__ created; invalid code is still rejected. 1 sabotage caught (py_compile).
+
 ## 0.23.18 - A command's time limit holds even when something it started can't be stopped - 2026-10-15
 
 sxrep_64T9VXZEVC61: exec with a 300 s limit ran `sudo python3 bridge.py`. At 300 s the agent killed

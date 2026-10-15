@@ -306,6 +306,12 @@ def _json_validator_argv(target: Path) -> list[str]:
     return [sys.executable, "-m", "json.tool", str(target)]
 
 
+_PYTHON_COMPILE_CHECK = (
+    "import sys; p = sys.argv[1]; "
+    "compile(open(p, 'rb').read(), p, 'exec', dont_inherit=True)"
+)
+
+
 def build_validator_preset(preset: str, target: Path) -> list[str]:
     """Return the validator command as an argv LIST (never a string).
 
@@ -318,7 +324,12 @@ def build_validator_preset(preset: str, target: Path) -> list[str]:
     if preset == "json":
         return _json_validator_argv(target)
     if preset == "python":
-        return [sys.executable, "-m", "py_compile", t]
+        # compile() catches what py_compile does (syntax errors, 'return' outside a
+        # function...) without writing bytecode: py_compile saves it into the
+        # __pycache__ next to the candidate, i.e. in the target's own directory, and
+        # failed with Errno 13 where the agent can't write there, or left stray .pyc
+        # files where it can (sxrep_N318DCSMDYWE).
+        return [sys.executable, "-c", _PYTHON_COMPILE_CHECK, t]
     if preset == "sh":
         return ["bash", "-n", t]
     if preset == "systemd":
