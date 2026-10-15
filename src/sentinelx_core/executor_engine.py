@@ -65,12 +65,34 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
-async def _stop_process_tree(proc: asyncio.subprocess.Process) -> None:
+# How long to wait for the process tree to go away after the kill. Something that
+# outlives the kill and still holds our pipes - typically a process started through
+# sudo, which runs as root, so an unprivileged agent can't signal it - would otherwise
+# keep proc.wait() blocked until it exits on its own (asyncio's wait() also waits for
+# the pipes to close): a command with a 300 s limit came back at 900 s, when the
+# root process finished (sxrep_64T9VXZEVC61).
+STOP_GRACE_SECONDS = 5.0
+
+
+async def _stop_process_tree(proc: asyncio.subprocess.Process) -> bool:
+    """Kill the tree and wait briefly for it to go. Returns False when something
+    outlived the kill and still held our pipes: we close our end and return
+    instead of waiting for it, and it keeps running on its own."""
     _kill_process_tree(proc)
     try:
-        await proc.wait()
+        await asyncio.wait_for(proc.wait(), timeout=STOP_GRACE_SECONDS)
+        return True
     except ProcessLookupError:
-        pass
+        return True
+    except (asyncio.TimeoutError, TimeoutError):
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            transport.close()
+        logger.warning(
+            "a process started by a timed-out command outlived the kill and was left running (shell pid %s)",
+            proc.pid,
+        )
+        return False
 
 
 async def communicate_partial(
@@ -105,15 +127,20 @@ async def communicate_partial(
         return bytes(out), bytes(err), True
 
 
-def timeout_text(partial: str) -> str:
+LEFT_RUNNING_NOTE = (
+    "A process this command started didn't stop when asked (for example one running "
+    "as root through sudo) and is still running on the host."
+)
+
+
+def timeout_text(partial: str, left_running: bool = False) -> str:
     """The timeout marker, plus whatever the process wrote before it, if anything.
 
     It still starts with the marker hub and assistants already recognise.
     """
     partial = (partial or "").strip()
-    if not partial:
-        return "⏱️ Timeout"
-    return f"⏱️ Timeout. Output written before the timeout:\n{partial}"
+    text = "⏱️ Timeout" if not partial else f"⏱️ Timeout. Output written before the timeout:\n{partial}"
+    return f"{text}\n{LEFT_RUNNING_NOTE}" if left_running else text
 
 
 def _shell_argv(cmd: str) -> list[str]:
@@ -233,16 +260,17 @@ async def run_shell(
             await _stop_process_tree(proc)
             raise
         if timed_out:
-            await _stop_process_tree(proc)
+            left_running = not await _stop_process_tree(proc)
             partial = "\n".join(
                 t for t in (stdout_b.decode(errors="replace").strip(),
                             stderr_b.decode(errors="replace").strip()) if t
             )
             return {
-                "output": timeout_text(partial),
+                "output": timeout_text(partial, left_running),
                 "duration": round(time.time() - start, 2),
                 "returncode": -1,
                 "timed_out": True,
+                **({"left_running": True} if left_running else {}),
             }
 
         stdout = stdout_b.decode(errors="replace").strip()
@@ -301,10 +329,11 @@ async def run_shell_split(
             await _stop_process_tree(proc)
             raise
         if timed_out:
-            await _stop_process_tree(proc)
+            left_running = not await _stop_process_tree(proc)
             return {
+                **({"left_running": True} if left_running else {}),
                 "stdout": stdout_b.decode(errors="replace").strip(),
-                "stderr": timeout_text(stderr_b.decode(errors="replace")),
+                "stderr": timeout_text(stderr_b.decode(errors="replace"), left_running),
                 "duration": round(time.time() - start, 2),
                 "returncode": -1,
                 "timed_out": True,

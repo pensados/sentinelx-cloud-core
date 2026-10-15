@@ -3,6 +3,22 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.18 - A command's time limit holds even when something it started can't be stopped - 2026-10-15
+
+sxrep_64T9VXZEVC61: exec with a 300 s limit ran `sudo python3 bridge.py`. At 300 s the agent killed
+the shell, but bridge.py ran as root, so the unprivileged agent couldn't signal it, and it still held
+the shell's stdout. asyncio's proc.wait() also waits for the pipes to close, so the call (a
+background job) came back only when bridge.py exited on its own, at 900 s, after the hub had already
+marked it orphaned. Reproduced on 0.23.17: a 2 s limit returned after 12 s.
+
+- executor_engine._stop_process_tree(): after the kill, waits at most STOP_GRACE_SECONDS (5 s); if
+  something outlived it and still holds the pipes, closes our end, logs a warning and returns False
+  instead of waiting for it. The survivor keeps running on its own.
+- run_shell / run_shell_split: in that case the result says so (LEFT_RUNNING_NOTE after the timeout
+  marker) and carries left_running: true. get_command_help gets the bounded wait too.
+- tests/test_exec_timeout_survivor.py (3): a grandchild in its own session (setsid) stands in for
+  the root process. 1 sabotage caught (unbounded wait).
+
 ## 0.23.17 - A finished upload or transfer lands across filesystems - 2026-10-11
 
 sxrep_XW9FTRHAH0H7: a transfer to a WSL host writing under /mnt/... moved every byte and then
