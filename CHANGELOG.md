@@ -3,6 +3,21 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.23 - The exec chain check understands loops and conditionals - 2026-10-16
+
+0.23.22 checked shell grammar words as programs, so every `for ...; do ...; done` and
+`if ...; then ...; fi` in an exec was refused unless those words were in allowed_commands. Found
+by running a customer's 30 days of exec history through the 0.23.22 rules before they upgraded.
+
+- segment_check._command_part(): leading do/then/else/elif/if/while/until/!/{/time are skipped and
+  what follows is checked; done/fi/} and the `for VAR in WORDS` header run no command ($(...) in
+  them is still checked); a subshell's '(' and closing ')' are dropped so the command inside is
+  matched as written. `case` is refused as unparseable: its arms can't be told apart with certainty.
+- SAFE_BUILTINS allowed in any position: set, test, [, [[, true, false, :, read, shift, break,
+  continue, exit, return, wait. NOT export (export LD_PRELOAD=... changes what runs next), source,
+  eval, exec or command.
+- tests/test_exec_chain_shell_grammar.py (15). 1 sabotage caught.
+
 ## 0.23.22 - Every command in an exec chain must be allowed, by default (GHSA-r2h3-76g7-m95x) - 2026-10-16
 
 allowed_commands matched the whole string by prefix and exec_strict was off by default, so with `ls`

@@ -546,6 +546,44 @@ def strip_heredoc_bodies(command: str) -> tuple[str, list[str]]:
     return "".join(out), live
 
 
+# Shell grammar words that are not programs (0.23.23). 0.23.22 checked them as
+# commands, so every `for ...; do ...; done` and `if ...; then ...; fi` was refused.
+_LEADING_KEYWORDS = frozenset({"do", "then", "else", "elif", "if", "while", "until", "!", "{", "time"})
+_CLOSING_KEYWORDS = frozenset({"done", "fi", "}"})
+_HEADER_KEYWORDS = frozenset({"for", "select"})   # `for VAR in WORDS`: no command; $(...) is checked apart
+# Builtins that run nothing else and change nothing outside the shell. NOT export
+# (export LD_PRELOAD=... hijacks what follows), source/., eval, exec, command.
+SAFE_BUILTINS = frozenset({"set", "test", "[", "[[", "true", "false", ":", "read",
+                           "shift", "break", "continue", "exit", "return", "wait"})
+
+
+def _command_part(segment: str) -> str | None:
+    """The segment without leading grammar words, or None if it runs no command.
+
+    Raises UnparseableCommand for `case`: its arms (`pat) cmd ;;`) can't be told
+    apart from commands with certainty, and skipping them would leave them
+    unchecked.
+    """
+    rest = segment.lstrip()
+    while True:
+        rest = rest.lstrip("(").lstrip()      # subshell: check what runs inside
+        word = first_word(rest)
+        if word in _LEADING_KEYWORDS:
+            rest = rest[len(word):].lstrip()
+            continue
+        break
+    word = first_word(rest)
+    if not word or word in _CLOSING_KEYWORDS or word in _HEADER_KEYWORDS:
+        return None
+    if word in ("case", "esac"):
+        raise UnparseableCommand("a case statement")
+    # `(cd x && ls)` splits into `(cd x` and `ls)`: drop the ')' that closes the
+    # subshell so the command is matched as written.
+    while rest.endswith(")") and rest.count(")") > rest.count("("):
+        rest = rest[:-1].rstrip()
+    return rest or None
+
+
 def _only_assignments(segment: str) -> bool:
     toks = segment.split()
     return bool(toks) and all(_ASSIGNMENT.match(t) for t in toks)
@@ -565,11 +603,12 @@ def unauthorised_chain(policy, command: str, _depth: int = 0) -> str | None:
     masked, bodies = mask_substitutions(stripped)
     for body in live_bodies:
         bodies.extend(mask_substitutions(body, literal_quotes=True)[1])
-    for index, segment in enumerate(split_top_level(masked)):
-        if _only_assignments(segment) or policy.is_command_allowed(segment):
+    for index, raw in enumerate(split_top_level(masked)):
+        segment = _command_part(raw)
+        if segment is None or _only_assignments(segment) or policy.is_command_allowed(segment):
             continue
         word = first_word(segment)
-        if word in POSITION_FREE:
+        if word in POSITION_FREE or word in SAFE_BUILTINS:
             continue
         # Inside a substitution the head is in filter position too: `$(date)`
         # can't reach anything the outer command couldn't, and a file operand is
