@@ -26,6 +26,7 @@ import hashlib
 import os
 import ipaddress
 import json
+import pathlib
 import re
 import shutil
 import socket
@@ -282,6 +283,53 @@ def _decode_base64_to(content_b64: str, dest: Path) -> tuple[int, str]:
     return len(raw), hashlib.sha256(raw).hexdigest()
 
 
+_STAGING_DIR_NAME = ".sentinelx_uploads"
+
+
+def _reject_staging_path(upload_base: Path, dest: Path) -> None:
+    """upload_file must not write into the chunked-upload staging area: a forged
+    meta.json there is the lever for writing outside upload_base at completion
+    (GHSA-r2h3-76g7-m95x)."""
+    staging = (upload_base / _STAGING_DIR_NAME).resolve()
+    d = dest.resolve()
+    if d == staging or staging in d.parents:
+        raise HandlerError(
+            "path_not_allowed",
+            f"{_STAGING_DIR_NAME}/ is reserved for chunked uploads and can't be "
+            "written to directly.",
+        )
+
+
+def _authorised_dest(meta: dict, upload_base: Path, policy: "Policy | None") -> Path:
+    """Where a completed upload may land, re-derived from meta under upload_init's
+    rules. Never trusts meta['target_path'] as-is (GHSA-r2h3-76g7-m95x)."""
+    target = str(meta.get("target_path") or "")
+    if not target:
+        raise HandlerError("invalid_state", "upload has no target_path")
+    if meta.get("landed_in_place"):
+        if policy is None:
+            raise HandlerError("path_not_allowed", "land-in-place not permitted here")
+        resolved = policy.resolve_path(target, need_write=True)
+        if resolved is None:
+            raise HandlerError(
+                "path_not_allowed",
+                f"{target} is not inside a writable (rw) file_ops path.",
+            )
+        return resolved
+    # Not landed: the meta stores an already-resolved absolute path under
+    # upload_base. Verify it still resolves inside upload_base (don't re-hang it
+    # under upload_base, which would both misplace a legit file and defuse the
+    # check for a forged absolute target).
+    dest = pathlib.Path(target).resolve()
+    base = upload_base.resolve()
+    if dest != base and base not in dest.parents:
+        raise HandlerError(
+            "path_traversal",
+            f"target_path {target} is not under the agent's upload_base directory.",
+        )
+    return dest
+
+
 def make_upload_file_handler(policy: Policy, upload_base: Path):
     """Single-call upload (small/medium files). Bytes inline or via URL."""
 
@@ -311,6 +359,7 @@ def make_upload_file_handler(policy: Policy, upload_base: Path):
                 "that escape upload_base are refused.",
             ) from exc
 
+        _reject_staging_path(upload_base, dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists() and not overwrite:
             raise HandlerError(
@@ -411,7 +460,8 @@ def make_upload_init_handler(upload_base: Path, policy: Policy | None = None):
 
         meta = {
             "upload_id": upload_id,
-            "target_path": str(dest),
+            "target_path": str(target_path) if landed else str(dest),
+            "resolved_target": str(dest),
             "landed_in_place": landed,
             "overwrite": overwrite,
             "total_size": total_size,
@@ -450,6 +500,7 @@ def make_upload_chunk_handler(upload_base: Path):
         if idx < 0:
             raise HandlerError("invalid_payload", "index must be >= 0")
 
+        upload_id = _validated_upload_id(upload_id)
         tmp_root = upload_base / ".sentinelx_uploads"
         upload_dir = tmp_root / upload_id
         if not _meta_file(upload_dir).exists():
@@ -473,7 +524,7 @@ def make_upload_chunk_handler(upload_base: Path):
     return handle_upload_chunk
 
 
-def make_upload_complete_handler(upload_base: Path):
+def make_upload_complete_handler(upload_base: Path, policy: "Policy | None" = None):
     async def handle_upload_complete(payload: dict[str, Any]) -> dict[str, Any]:
         upload_id = payload.get("upload_id")
         sha256_expected = payload.get("sha256")
@@ -487,8 +538,10 @@ def make_upload_complete_handler(upload_base: Path):
         if not meta_file.exists():
             raise HandlerError("not_found", f"upload_id not found: {upload_id}")
 
+        upload_id = _validated_upload_id(upload_id)
         meta = json.loads(meta_file.read_text())
-        dest = Path(meta["target_path"]).resolve()
+        # Re-authorise instead of trusting the meta (GHSA-r2h3-76g7-m95x).
+        dest = _authorised_dest(meta, upload_base, policy)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         parts = sorted((upload_dir / "parts").glob("*.part"))

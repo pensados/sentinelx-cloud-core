@@ -138,7 +138,7 @@ def build_registry(
         "upload_file": make_upload_file_handler(policy, upload_base),
         "upload_init": make_upload_init_handler(upload_base, policy),
         "upload_chunk": make_upload_chunk_handler(upload_base),
-        "upload_complete": make_upload_complete_handler(upload_base),
+        "upload_complete": make_upload_complete_handler(upload_base, policy),
 
         # Cross-host file transfer (source side, INTERNAL — driven by the Hub's
         # sentinel_transfer_file coordinator, not a model-visible tool). The

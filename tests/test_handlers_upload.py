@@ -180,13 +180,27 @@ async def test_upload_complete_unknown_id(policy: Policy) -> None:
 
 async def test_upload_chunk_unknown_id(policy: Policy) -> None:
     handlers = build_registry(policy=policy)
+    # A well-formed but unknown id still reports not_found.
+    with pytest.raises(HandlerError) as exc:
+        await handlers["upload_chunk"]({
+            "upload_id": "a" * 32,
+            "index": 0,
+            "content_base64": base64.b64encode(b"x").decode(),
+        })
+    assert exc.value.code == "not_found"
+
+
+async def test_upload_chunk_malformed_id_is_rejected(policy: Policy) -> None:
+    # A non-hex id (e.g. one with '..') is rejected before any filesystem access
+    # (GHSA-r2h3-76g7-m95x).
+    handlers = build_registry(policy=policy)
     with pytest.raises(HandlerError) as exc:
         await handlers["upload_chunk"]({
             "upload_id": "does-not-exist",
             "index": 0,
             "content_base64": base64.b64encode(b"x").decode(),
         })
-    assert exc.value.code == "not_found"
+    assert exc.value.code == "invalid_payload"
 
 
 # ── SSRF defense for file_url ─────────────────────────────────────────────

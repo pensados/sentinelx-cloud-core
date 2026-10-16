@@ -837,21 +837,40 @@ def _net_error(code: str, action: str, rc: int, err: bytes, root: Path) -> Handl
     )
 
 
+def _reject_option_like(value: str, field: str) -> str:
+    """A remote/ref/pattern passed to git must not look like an option.
+
+    git treats a value such as --upload-pack=<cmd> as a flag and runs <cmd>
+    (reported privately, GHSA-r2h3-76g7-m95x). We reject a leading '-' and rely on
+    '--' before positionals as a second line of defence.
+    """
+    v = (value or "").strip()
+    if v.startswith("-"):
+        raise HandlerError(
+            "invalid_payload",
+            f"{field} must not start with '-': {v!r} looks like a git option, not a "
+            "remote or ref.",
+        )
+    return v
+
+
 async def _op_ls_remote(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
     """Read refs from a remote. Touches no working tree at all.
 
     The safest thing here, and the one that answers "what SHA is that branch on
     right now", which is what a compare-and-swap publish needs before it starts.
     """
-    remote = str(payload.get("remote") or "origin").strip()
+    remote = _reject_option_like(str(payload.get("remote") or "origin"), "remote")
     pattern = payload.get("ref_pattern")
+    if pattern is not None:
+        pattern = _reject_option_like(str(pattern), "ref_pattern")
     path = payload.get("path")
 
     root = _resolve_or_reject(policy, str(path)) if path else None
     if root is not None:
         root = await _revalidate_git_root(policy, root, str(path))
 
-    args = ["ls-remote", remote]
+    args = ["ls-remote", "--", remote]
     if pattern:
         args.append(str(pattern))
     rc, out, err = await _run_git(root or Path.cwd(), *args, timeout=_NET_TIMEOUT)
@@ -874,16 +893,21 @@ async def _op_fetch(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
     Safe by construction: fetch updates remote-tracking refs and nothing the
     caller can lose. It is the honest half of what `pull` does.
     """
+    # Validate the option-like inputs before resolving paths, so a bad remote/ref
+    # is rejected the same way regardless of the path.
+    remote = _reject_option_like(str(payload.get("remote") or "origin"), "remote")
+    ref = payload.get("ref")
+    if ref is not None:
+        ref = _reject_option_like(str(ref), "ref")
     path = payload.get("path")
     if not path:
         raise HandlerError("invalid_payload", "fetch needs `path`: the repository.")
     root = await _revalidate_git_root(
         policy, _resolve_or_reject(policy, str(path)), str(path)
     )
-    remote = str(payload.get("remote") or "origin").strip()
-    args = ["fetch", "--prune", remote]
-    if payload.get("ref"):
-        args.append(str(payload["ref"]))
+    args = ["fetch", "--prune", "--", remote]
+    if ref:
+        args.append(ref)
     rc, out, err = await _run_git(root, *args, timeout=_NET_TIMEOUT)
     if rc != 0:
         raise _net_error("remote_failed", f"git fetch {remote}", rc, err, root)

@@ -3,6 +3,28 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.21 - Harden uploads and git_ops against path/option injection (GHSA-r2h3-76g7-m95x) - 2026-10-16
+
+Reported privately. Two write-side issues fixed; the exec prefix allowlist is a separate change.
+
+- handlers/upload: chunked uploads can no longer write outside the allowed paths. upload_complete
+  re-authorises the destination (upload_init's rules) instead of trusting meta['target_path'];
+  upload_chunk and upload_complete validate upload_id (no '..'); upload_file refuses to write into
+  the reserved .sentinelx_uploads/ staging area, which was the lever for a forged meta.json. A
+  well-formed but unknown id still reports not_found; a malformed id now reports invalid_payload.
+- handlers/git_ops: _op_ls_remote and _op_fetch reject remote/ref/ref_pattern values starting with
+  '-' and pass '--' before positionals, so --upload-pack=<cmd> can't make git run <cmd>; fetch
+  validates these before resolving the path.
+- tests: test_upload_target_authorisation.py (4), test_git_ops_option_injection.py (5), plus the
+  upload_chunk id test split into well-formed/malformed. 3 sabotages caught. All three issues
+  reproduced on 0.23.20 before the fix and refused after.
+- tests/test_exec_timeout_survivor.py (from 0.23.18) no longer requires left_running on every
+  Python. CI failed on 3.14 only: there asyncio's Process.wait() returns at process exit instead
+  of also waiting for the pipes (checked with the official images: 3.12 waited 5.5 s for a
+  grandchild holding stdout, 3.14 returned in 0.0 s), so the call already comes back on time and
+  there is no survivor to report. The time bound is asserted everywhere; the note only when the
+  survivor was detected.
+
 ## 0.23.20 - sentinel_edit works on Windows with App Control (WDAC) - 2026-10-16
 
 GitHub issue #56: on Windows 11 with Windows Defender Application Control, every sentinel_edit
