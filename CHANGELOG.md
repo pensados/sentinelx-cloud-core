@@ -3,6 +3,22 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.20 - sentinel_edit works on Windows with App Control (WDAC) - 2026-10-16
+
+GitHub issue #56: on Windows 11 with Windows Defender Application Control, every sentinel_edit
+failed with WinError 4551 (Code Integrity events 3077/3033). The agent started pensa-safe-edit
+through pip's console-script launcher, sentinelx-pensa-safe-edit.exe, which is unsigned; the
+python.exe already running the agent is signed by the PSF and allowed.
+
+- handlers/edit._helper_command(): on Windows the helper runs as
+  `<agent's sys.executable> -m sentinelx_core.vendored.pensa_safe_edit`; elsewhere the binary
+  stays, because a sudo edit is authorised by sudoers for that exact path. Same code and the same
+  checks: path authorisation happens in the handler before the helper starts.
+- tests/test_edit_helper_on_windows.py (4), one runs the module command for real. 1 sabotage
+  caught. Checked on a Windows 11 Pro host with the agent's own interpreter: the launcher .exe is
+  NotSigned, python.exe is Valid (PSF), and the new command edited a file with its backup.
+  Thanks to the reporter for the analysis and the workaround.
+
 ## 0.23.19 - The python edit validator writes nothing next to the file - 2026-10-15
 
 sxrep_N318DCSMDYWE: sentinel_edit with validator_preset='python' ran py_compile on the candidate,

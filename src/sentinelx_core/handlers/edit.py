@@ -100,6 +100,25 @@ def _resolve_safe_edit_bin() -> str:
     return "pensa-safe-edit"
 
 
+SAFE_EDIT_MODULE = "sentinelx_core.vendored.pensa_safe_edit"
+
+
+def _helper_command(binary: str, sudo: bool) -> list[str]:
+    """How to start pensa-safe-edit.
+
+    On Windows the agent's own interpreter runs the module. pip's console-script
+    launcher (sentinelx-pensa-safe-edit.exe) is an unsigned .exe, and Windows App
+    Control (WDAC) blocks it with WinError 4551 (GitHub issue #56), while the
+    interpreter already running the agent is allowed. Same code, same checks: the
+    path authorisation happens in this handler before the helper is started.
+    Elsewhere the binary stays, because a sudo edit is authorised by sudoers for
+    that exact path.
+    """
+    if sys.platform == "win32" and not sudo:
+        return [sys.executable, "-m", SAFE_EDIT_MODULE]
+    return [binary]
+
+
 # Public name the rest of the module reads.
 DEFAULT_SAFE_EDIT_BIN = LEGACY_SAFE_EDIT_BIN  # kept for backward compat with old refs
 
@@ -191,7 +210,7 @@ def _build_argv(
     argv: list[str] = []
     if sudo:
         argv.append("sudo")
-    argv.extend([binary, path, "--mode", mode])
+    argv.extend(_helper_command(binary, sudo) + [path, "--mode", mode])
 
     # Old content: prefer file path, fall back to writing inline content
     if old_file_path is not None:
