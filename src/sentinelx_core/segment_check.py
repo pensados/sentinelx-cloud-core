@@ -32,6 +32,8 @@ script_run, which has always been the explicit path for a workflow.
 
 from __future__ import annotations
 
+import re
+
 # Consume stdin, write stdout, decide nothing. Allowed only after the first
 # segment: `cat` at the head of a pipeline reads any file the agent can reach,
 # while `| cat` cannot reach anything the previous segment did not already hand
@@ -194,7 +196,10 @@ def split_top_level(command: str) -> list[str]:
             buf = []
             i += 1
             continue
-        if ch in ";|":
+        if ch in ";|\n":
+            # A newline outside quotes separates commands exactly like ';' does.
+            # (Strict mode refuses newlines before it gets here; the default chain
+            # check relies on this.)
             out.append("".join(buf))
             buf = []
             i += 1
@@ -340,6 +345,244 @@ def file_redirection(command: str) -> str | None:
             i = k
             continue
         return command[start:k].strip() or command[start:start + 1]
+    return None
+
+
+# --------------------------------------------------------------------------
+# Default chain check (GHSA-r2h3-76g7-m95x). Not a shell parser: it finds where
+# each command starts and asks the allowlist about it. What it cannot analyse
+# with certainty raises UnparseableCommand, and the caller REFUSES: a gap in the
+# analysis must be a false rejection, never a false permission.
+# --------------------------------------------------------------------------
+
+class UnparseableCommand(ValueError):
+    """A command structure the chain check cannot analyse with certainty."""
+
+
+_SUB_MARK = "__SX_SUBST__"
+_MAX_NESTING = 8
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_HEREDOC_OP = re.compile(
+    r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\?[^\s;&|<>()'\"]+))"
+)
+
+
+def _match_close(s: str, i: int) -> int:
+    """i is just after an opening '('. Return the index of its matching ')'."""
+    depth, n, quote = 1, len(s), None
+    while i < n:
+        ch = s[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise UnparseableCommand("unbalanced parentheses in a substitution")
+
+
+def mask_substitutions(command: str, literal_quotes: bool = False) -> tuple[str, list[str]]:
+    """Replace $(...), `...`, <(...) and >(...) with a placeholder word.
+
+    Returns (masked command, bodies). The outer structure can then be split
+    without cutting a pipe that lives INSIDE a substitution, and every body is
+    checked on its own. $((...)) is arithmetic, not a command, but substitutions
+    inside it are collected. Single quotes hide everything; double quotes do not
+    stop $(...) or backticks. With literal_quotes (an unquoted here-doc body),
+    quotes are plain text and hide nothing.
+    """
+    out: list[str] = []
+    bodies: list[str] = []
+    i, n, quote = 0, len(command), None
+    while i < n:
+        ch = command[i]
+        if not literal_quotes:
+            if quote == "'":
+                out.append(ch)
+                if ch == "'":
+                    quote = None
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < n:
+                out.append(command[i:i + 2])
+                i += 2
+                continue
+            if quote == '"' and ch == '"':
+                quote = None
+                out.append(ch)
+                i += 1
+                continue
+            if quote is None and ch in "'\"":
+                quote = ch
+                out.append(ch)
+                i += 1
+                continue
+        elif ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if command.startswith("$((", i):
+            j = _match_close(command, i + 2)          # matches the outer '('
+            _, inner = mask_substitutions(command[i + 3:j - 1], literal_quotes)
+            bodies.extend(inner)
+            out.append("0")
+            i = j + 1
+            continue
+        if command.startswith("$(", i):
+            j = _match_close(command, i + 2)
+            bodies.append(command[i + 2:j])
+            out.append(_SUB_MARK)
+            i = j + 1
+            continue
+        if ch == "`":
+            j = i + 1
+            while j < n and command[j] != "`":
+                j += 2 if command[j] == "\\" else 1
+            if j >= n:
+                raise UnparseableCommand("unbalanced backtick")
+            bodies.append(command[i + 1:j].replace("\\`", "`"))
+            out.append(_SUB_MARK)
+            i = j + 1
+            continue
+        if quote is None and not literal_quotes and (
+            command.startswith("<(", i) or command.startswith(">(", i)
+        ):
+            j = _match_close(command, i + 2)
+            bodies.append(command[i + 2:j])
+            out.append(_SUB_MARK)
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), bodies
+
+
+def strip_heredoc_bodies(command: str) -> tuple[str, list[str]]:
+    """Remove here-document bodies, which are input data, not commands.
+
+    Returns (command without bodies, bodies whose delimiter was NOT quoted).
+    Those still need their substitutions checked: bash runs $(...) inside a
+    `<<EOF` body, but not inside a `<<'EOF'` one.
+    """
+    out: list[str] = []
+    live: list[str] = []
+    pending: list[tuple[str, bool, bool]] = []
+    i, n, quote = 0, len(command), None
+    while i < n:
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if command.startswith("<<", i) and not command.startswith("<<<", i):
+            m = _HEREDOC_OP.match(command, i)
+            if not m:
+                raise UnparseableCommand("a here-document whose delimiter can't be read")
+            dash, sq, dq, bare = m.groups()
+            if sq is not None:
+                delim, is_live = sq, False
+            elif dq is not None:
+                delim, is_live = dq, False
+            else:
+                is_live = not bare.startswith("\\")
+                delim = bare.lstrip("\\")
+            pending.append((delim, bool(dash), is_live))
+            out.append(m.group(0))
+            i = m.end()
+            continue
+        if ch == "\n" and pending:
+            out.append("\n")
+            i += 1
+            for delim, tabs, is_live in pending:
+                body: list[str] = []
+                while True:
+                    if i >= n:
+                        raise UnparseableCommand(f"here-document not terminated (missing {delim!r})")
+                    j = command.find("\n", i)
+                    j = n if j == -1 else j
+                    line = command[i:j]
+                    i = j + 1 if j < n else n
+                    cand = (line.lstrip("\t") if tabs else line).rstrip("\r")
+                    if cand == delim:
+                        break
+                    body.append(line)
+                if is_live:
+                    live.append("\n".join(body))
+            pending = []
+            continue
+        out.append(ch)
+        i += 1
+    if pending:
+        raise UnparseableCommand("a here-document with no body")
+    return "".join(out), live
+
+
+def _only_assignments(segment: str) -> bool:
+    toks = segment.split()
+    return bool(toks) and all(_ASSIGNMENT.match(t) for t in toks)
+
+
+def unauthorised_chain(policy, command: str, _depth: int = 0) -> str | None:
+    """Default check: every command in a chain must be allowed, not just the first.
+
+    Splits on ; | && || & and newlines outside quotes, ignores here-doc bodies
+    (data), and checks the inside of every substitution on its own. Returns the
+    first segment the allowlist does not cover, or None. Raises
+    UnparseableCommand when it can't be sure; the caller refuses.
+    """
+    if _depth > _MAX_NESTING:
+        raise UnparseableCommand("substitutions nested too deeply")
+    stripped, live_bodies = strip_heredoc_bodies(command)
+    masked, bodies = mask_substitutions(stripped)
+    for body in live_bodies:
+        bodies.extend(mask_substitutions(body, literal_quotes=True)[1])
+    for index, segment in enumerate(split_top_level(masked)):
+        if _only_assignments(segment) or policy.is_command_allowed(segment):
+            continue
+        word = first_word(segment)
+        if word in POSITION_FREE:
+            continue
+        # Inside a substitution the head is in filter position too: `$(date)`
+        # can't reach anything the outer command couldn't, and a file operand is
+        # still refused by the read-only checks below.
+        if (index > 0 or _depth > 0) and word in READ_ONLY_FILTERS:
+            if _filter_reads_a_file(segment) or _filter_has_unsafe_option(segment):
+                return segment
+            continue
+        return segment
+    for body in bodies:
+        offending = unauthorised_chain(policy, body, _depth + 1)
+        if offending is not None:
+            return offending
     return None
 
 

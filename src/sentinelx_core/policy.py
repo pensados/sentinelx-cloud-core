@@ -219,6 +219,20 @@ class LocalApiEndpoint:
     compatibility: dict[str, Any] = field(default_factory=dict)
 
 
+def _entry_matches(cmd: str, entry: str) -> bool:
+    entry = (entry or "").strip()
+    if not entry:
+        # An empty entry has always matched everything (a known gotcha, pinned
+        # by test_allowlist_empty_string_matches_everything). Keep it: an
+        # operator relying on it must not be locked out by this change.
+        return True
+    if not cmd.startswith(entry):
+        return False
+    if len(cmd) == len(entry) or entry.endswith("/"):
+        return True
+    return cmd[len(entry)].isspace()
+
+
 @dataclass
 class Policy:
     """Loaded policy. Immutable after construction."""
@@ -789,14 +803,17 @@ class Policy:
     # --- Query methods --------------------------------------------------------
 
     def is_command_allowed(self, cmd: str) -> bool:
-        """Match by prefix, like the legacy core does.
+        """Whole-word match against allowed_commands.
 
-        Empty allowlist means deny-all.
+        An entry matches when the command IS the entry or continues after it with
+        whitespace: `ls` allows `ls -la` but no longer `lsof` (GHSA-r2h3-76g7-m95x).
+        An entry ending in '/' keeps its directory-prefix meaning, so `/opt/tools/`
+        still allows `/opt/tools/run.sh`. Empty allowlist means deny-all.
         """
         cmd = (cmd or "").strip()
         if not cmd:
             return False
-        return any(cmd.startswith(allowed) for allowed in self.allowed_commands)
+        return any(_entry_matches(cmd, allowed) for allowed in self.allowed_commands)
 
     def get_service(self, name: str) -> ServiceSpec | None:
         return self.services.get(name)

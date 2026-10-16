@@ -3,6 +3,32 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.22 - Every command in an exec chain must be allowed, by default (GHSA-r2h3-76g7-m95x) - 2026-10-16
+
+allowed_commands matched the whole string by prefix and exec_strict was off by default, so with `ls`
+allowed, `ls; id`, `ls $(id)`, `lsof`, `ls` + newline + `id` and `ls && id` all ran (reported
+privately). exec_strict (0.23.16) already checked every segment, but also refuses newlines,
+substitutions and file redirections outright, which measured at 10% of successful exec calls.
+
+- policy.is_command_allowed: whole-word match. `ls` allows `ls -la`, not `lsof`. An entry ending in
+  '/' keeps its directory-prefix meaning; an empty entry still matches everything (known gotcha,
+  kept so no one is locked out). Measured cost: 0.19% of successful calls.
+- segment_check: split_top_level also splits on newlines; strip_heredoc_bodies drops here-doc
+  bodies (data) but returns unquoted-delimiter bodies, whose $(...) bash still runs;
+  mask_substitutions replaces $(...), backticks and <( )/>( ) with a placeholder so the outer
+  chain splits correctly, keeps $((...)) arithmetic, and returns the bodies; unauthorised_chain
+  checks every segment and, recursively, every body. Anything it can't analyse with certainty
+  (unbalanced parentheses or backticks, an unterminated here-doc) raises UnparseableCommand and
+  is refused: a gap must be a false rejection, never a false permission.
+- handlers/exec: with exec_strict off and outside Windows, unauthorised_chain runs after the
+  usual check; the error names the missing command and how to allow it. exec_strict is unchanged.
+  Windows: only the whole-word match (exec runs PowerShell there, whose grammar this does not
+  model).
+- Measured on 1.24M successful exec calls (7 days, allowlists reconstructed from use plus the
+  default template, an upper bound): segment check 5.08%, substitutions 0.36%; newlines, the
+  biggest exec_strict cost (7.05%), are now split instead of refused.
+- tests/test_exec_chain_check.py (28). 5 sabotages caught.
+
 ## 0.23.21 - Harden uploads and git_ops against path/option injection (GHSA-r2h3-76g7-m95x) - 2026-10-16
 
 Reported privately. Two write-side issues fixed; the exec prefix allowlist is a separate change.

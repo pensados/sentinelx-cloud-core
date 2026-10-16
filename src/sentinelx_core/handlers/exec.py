@@ -12,15 +12,19 @@ script_run for multi-line) or stop trying entirely.
 from __future__ import annotations
 
 import re
+import sys
 from typing import Any
 
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.segment_check import (
+    UnparseableCommand,
     control_character,
     file_redirection,
     has_substitution,
+    unauthorised_chain,
     unauthorised_segment,
 )
+from sentinelx_core.segment_check import first_word as first_word_of
 from sentinelx_core.executor_engine import run_shell
 from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
@@ -211,6 +215,40 @@ def make_exec_handler(policy: Policy):
                     "allowed_commands": list(policy.allowed_commands),
                 },
             )
+
+        # Every command in a chain answers for itself, not only what the string
+        # starts with: `allowed; id`, `allowed $(id)` and an allowed command
+        # followed by a newline used to run the rest unchecked
+        # (GHSA-r2h3-76g7-m95x). exec_strict already did this and more; this is
+        # the default. POSIX only: on Windows exec runs PowerShell, whose grammar
+        # this check does not model.
+        if not policy.exec_strict and sys.platform != "win32":
+            try:
+                offending = unauthorised_chain(policy, command)
+            except UnparseableCommand as exc:
+                raise HandlerError(
+                    "command_not_allowed",
+                    f"This command couldn't be checked safely ({exc}), so it was "
+                    f"not run. Send a simpler command, or use script_run for a "
+                    f"multi-step workflow.",
+                    details={"command": command, "reason": str(exc)},
+                )
+            if offending is not None:
+                word = first_word_of(offending)
+                raise HandlerError(
+                    "command_not_allowed",
+                    f"`{word}` (in {offending!r}) is not in allowed_commands for "
+                    f"this host. Every command in a chain is checked: after ; && "
+                    f"|| | & or a new line, and inside $(...). Add `{word}` to "
+                    f"allowed_commands in config.yaml if it should be allowed, or "
+                    f"use script_run for a workflow.",
+                    details={
+                        "command": command,
+                        "offending_segment": offending,
+                        "missing_command": word,
+                        "allowed_commands": list(policy.allowed_commands),
+                    },
+                )
 
         return await run_shell(command, timeout=timeout)
 
