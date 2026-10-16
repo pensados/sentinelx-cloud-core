@@ -141,6 +141,13 @@ def make_exec_handler(policy: Policy):
             ceiling = policy.exec_timeout_max
         timeout = min(timeout, ceiling)
 
+        # exec_mode: unrestricted -- the operator's choice for a trusted host: any
+        # command line runs under the agent's identity, like script_run. The
+        # boundary is the OS (the agent's user, sudoers, file permissions) and
+        # the audit log, not allowed_commands.
+        if policy.effective_exec_mode == "unrestricted":
+            return await run_shell(command, timeout=timeout)
+
         # Strict mode first: the prefix check below asks what the command
         # STARTS with, which is exactly the question that let `allowed; id`
         # through. When the operator has asked for it, every segment answers

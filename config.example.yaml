@@ -48,34 +48,33 @@
 disabled_ops: []
 
 # ============================================================================
-# Check EVERY segment of a chained exec command, not just what it starts with.
+# How `exec` decides what may run. Three modes:
 #
-# allowed_commands matches by PREFIX, and the matched string then goes to a
-# shell. So with `/usr/local/bin/probe` allowlisted, this passes today:
+#   exec_mode: allowlist     (the default)
+#     Every command in the line must be covered by allowed_commands below, not
+#     just the first: the line is split on ; && || | & and newlines (outside
+#     quotes), and commands inside $(...), backticks and <( ) are checked too.
+#     Entries match whole words: `ls` allows `ls -la`, not `lsof`. Free in any
+#     position: cd, shell grammar (if/then/else/fi, for/do/done, while...),
+#     harmless builtins (set, test, true, read...), and read-only filters after
+#     the first command (head, grep, sort, cut, wc...) when they get no file and
+#     no write option. `VAR=value cmd` must match an entry as written.
+#     bash -lc '...' is one argument and isn't looked into: allowing bash (or
+#     sh, python3, php, node) allows anything.
 #
-#   /usr/local/bin/probe ; id
+#   exec_mode: strict
+#     As allowlist, and newlines, $(...)/backticks and file redirections are
+#     refused outright. This is what `exec_strict: true` meant; it still works.
 #
-# because the string starts with an allowed prefix. Turn this on and every
-# segment must be covered on its own, and command substitution -- $(...) and
-# backticks -- is refused outright, since a prefix list cannot say anything
-# about what runs inside one.
+#   exec_mode: unrestricted
+#     For trusted development hosts: exec runs any command line under the
+#     agent's identity, as script_run does, and allowed_commands is ignored for
+#     exec. The boundary is the operating system (the agent's user, sudoers,
+#     file permissions) and the audit log. Keep allowlist on production.
 #
-#   exec_strict: true
-#
-# Two things still work, because neither widens what you can reach:
-#   - `cd` in any position, so `cd /srv/app && <allowed>` keeps working;
-#   - read-only filters (head, grep, sort, cut, wc...) AFTER a pipe, with no file
-#     argument and no write/execute options. Not as the first segment:
-#     `cat /etc/shadow` reads a file, `| cat` cannot. Filters that can write or
-#     run something (sed, awk, jq, tee) are NOT free: add them to
-#     allowed_commands by name if you want them.
-#
-# Off by default, deliberately. Measured against real fleet traffic, turning it
-# on unconditionally would reject about a third of chained calls -- `git`,
-# `npm`, `for` loops, anything a prefix list cannot express. Those belong in
-# script_run, which is the explicit path for a workflow.
+# disabled_ops: [exec] turns exec off whatever the mode.
 # ============================================================================
-exec_strict: false
+exec_mode: allowlist
 
 # ============================================================================
 # Commands the agent can execute via the `exec` op.

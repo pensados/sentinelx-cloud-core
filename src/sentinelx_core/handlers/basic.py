@@ -190,6 +190,8 @@ def make_capabilities_handler(
             # Part of the same question -- what is this host actually willing to
             # run -- and an auditor should not have to read config.yaml to know.
             "exec_strict": policy.exec_strict,
+            # allowlist | strict | unrestricted: whether exec checks commands at all.
+            "exec_mode": policy.effective_exec_mode,
             # Commands that are allowlisted but cannot run on this host. Today
             # only one cause: sudo under NoNewPrivileges. Advertising a command
             # as executable when the kernel guarantees it will fail sends the

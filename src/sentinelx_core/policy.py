@@ -219,6 +219,29 @@ class LocalApiEndpoint:
     compatibility: dict[str, Any] = field(default_factory=dict)
 
 
+EXEC_MODES = frozenset({"allowlist", "strict", "unrestricted"})
+
+
+def _resolve_exec_mode(data: dict) -> str:
+    """exec_mode from config.yaml. An explicit exec_mode wins over the older
+    exec_strict; an unknown value falls back to the default instead of keeping
+    the agent from starting."""
+    raw = data.get("exec_mode")
+    if raw is None:
+        return "strict" if bool(data.get("exec_strict", False)) else "allowlist"
+    mode = str(raw).strip().lower()
+    if mode not in EXEC_MODES:
+        logger.warning(
+            "policy_invalid_exec_mode",
+            extra={"value": str(raw)[:40], "using": "allowlist",
+                   "valid": sorted(EXEC_MODES)},
+        )
+        return "allowlist"
+    if data.get("exec_strict") and mode != "strict":
+        logger.warning("policy_exec_mode_overrides_exec_strict", extra={"exec_mode": mode})
+    return mode
+
+
 def _entry_matches(cmd: str, entry: str) -> bool:
     entry = (entry or "").strip()
     if not entry:
@@ -244,6 +267,21 @@ class Policy:
     # and every single one of them without. A security default that gets
     # reverted within the hour protects nobody. See segment_check.py.
     exec_strict: bool = False
+
+    # How exec decides what may run: "allowlist" (default; every command in a
+    # chain checked against allowed_commands), "strict" (also refuses newlines,
+    # substitutions and redirections; what exec_strict=True has always meant) or
+    # "unrestricted" (any command line under the agent's identity, like
+    # script_run). The last is for trusted development hosts, where a customer
+    # asked to "allow shell execution under this identity and let Linux enforce
+    # the rest" instead of maintaining an ever-growing list (issue #57).
+    exec_mode: str = "allowlist"
+
+    @property
+    def effective_exec_mode(self) -> str:
+        if self.exec_strict:
+            return "strict"
+        return self.exec_mode if self.exec_mode in EXEC_MODES else "allowlist"
 
     # Ops the operator has switched off on this host. An op named here is not
     # built into the registry at all, so it vanishes from capabilities and
@@ -460,6 +498,7 @@ class Policy:
             "local_apis",
             "disabled_ops",
             "exec_strict",
+            "exec_mode",
         }
         unknown = set(data.keys()) - KNOWN_KEYS - set(TYPO_HINTS.keys())
         if unknown:
@@ -739,7 +778,8 @@ class Policy:
 
         policy = cls(
             allowed_commands=tuple(data.get("allowed_commands") or []),
-            exec_strict=bool(data.get("exec_strict", False)),
+            exec_strict=_resolve_exec_mode(data) == "strict",
+            exec_mode=_resolve_exec_mode(data),
             disabled_ops=frozenset(
                 str(o).strip() for o in (data.get("disabled_ops") or []) if str(o).strip()
             ),

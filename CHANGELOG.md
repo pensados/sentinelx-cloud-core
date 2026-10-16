@@ -3,6 +3,22 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.24 - exec_mode: allowlist, strict or unrestricted - 2026-10-16
+
+A customer with a development fleet asked, before moving to 0.23.22, for a way to say "allow shell
+execution under this identity and let Linux enforce the rest" on trusted development hosts instead
+of maintaining an ever-growing allowed_commands, while keeping the strict per-command profile on
+production (issue #57).
+
+- policy.exec_mode, from config.yaml: allowlist (default; the 0.23.23 chain check), strict (what
+  exec_strict: true always meant; that key still works) or unrestricted (any command line under the
+  agent's identity, as script_run does; allowed_commands is ignored for exec). An explicit exec_mode
+  wins over exec_strict; an unknown value falls back to allowlist with a warning instead of keeping
+  the agent from starting. disabled_ops: [exec] still turns exec off whatever the mode.
+- sentinel_capabilities reports exec_mode.
+- config.example.yaml explains the three modes (the old text still described the prefix match).
+- tests/test_exec_mode.py (12). 1 sabotage caught.
+
 ## 0.23.23 - The exec chain check understands loops and conditionals - 2026-10-16
 
 0.23.22 checked shell grammar words as programs, so every `for ...; do ...; done` and
