@@ -508,6 +508,20 @@ _WIN_TASK_RESTART_DETACHED_TREEKILL = (
 )
 
 
+# The agent's own Windows service and per-user Scheduled Task are both named
+# this (install.ps1 $SvcId). The hardened restarts below exist to restart the
+# AGENT ITSELF: they kill the agent's (or the service wrapper's) process tree.
+# Any other service or task goes through the ordinary detached commands
+# (_build_windows_service). Until 0.23.25 every task restart took the agent's
+# tree with it: restarting Desktop Commander disconnected SentinelX
+# (sxrep_7AJZFT1VGEG5).
+_AGENT_UNIT = "SentinelX"
+
+
+def _is_agent_unit(name: str) -> bool:
+    return (name or "").strip().strip('"').casefold() == _AGENT_UNIT.casefold()
+
+
 async def _windows_task_restart(name: str) -> dict[str, Any]:
     """Hardened Windows Scheduled-Task self-restart (issue #4).
 
@@ -595,7 +609,7 @@ def make_service_handler(policy: Policy):
             )
 
         backend = getattr(spec, "backend", "service")
-        if action in ("restart", "reload") and sys.platform == "win32":
+        if action in ("restart", "reload") and sys.platform == "win32" and _is_agent_unit(spec.unit):
             if backend == "service":
                 return await _windows_service_restart(spec.unit)
             if backend == "task":

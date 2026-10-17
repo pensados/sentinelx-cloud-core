@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.25 - Restarting another Windows task or service no longer kills the agent - 2026-10-17
+
+On Windows, every Scheduled-Task restart used the hardened self-restart, which force-kills the
+agent's own process tree before /End and /Run: restarting Desktop Commander also disconnected
+SentinelX (sxrep_7AJZFT1VGEG5). Service restarts of other services likewise took the tree-kill path
+meant for the agent's own service, and their result said the agent would disconnect.
+
+- handlers/service: the hardened restarts (_windows_task_restart, _windows_service_restart) run only
+  for the agent's own unit, "SentinelX" (install.ps1 $SvcId), compared case-insensitively. Other tasks
+  and services use the ordinary detached commands that already existed (schtasks /End + /Run;
+  a detached Restart-Service).
+- tests/test_windows_restart_target.py (6). 1 sabotage caught.
+
 ## 0.23.24 - exec_mode: allowlist, strict or unrestricted - 2026-10-16
 
 A customer with a development fleet asked, before moving to 0.23.22, for a way to say "allow shell
