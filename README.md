@@ -173,8 +173,9 @@ A starter config is generated at install time. Editable. Reloaded when the
 service restarts. Schema:
 
 ```yaml
-# Commands the agent can execute via the `exec` op. Prefix-matched against
-# this list; empty/missing = nothing allowed (deny by default).
+# Commands the agent can execute via the `exec` op (exec_mode: allowlist, the
+# default). Whole-word match, and every command in a chained line must be
+# covered. Empty/missing = nothing allowed (deny by default).
 allowed_commands:
   - uptime
   - df -h
@@ -285,15 +286,23 @@ file_ops:
   max_search_results: 200     # per search
 ```
 
-The agent **only** runs commands that prefix-match `allowed_commands`. So
-allowing `git` lets the LLM run `git status`, `git log`, etc.; allowing
-`ls` is enough to cover `ls -lah /var/log`. Out of the box the config is
-restrictive — see `config.example.yaml` for the full starter list with
-sensible categories.
+In the default `exec_mode: allowlist`, the agent runs a command line only if
+every command in it matches `allowed_commands` as a whole word (agent
+0.23.22+). So allowing `git` lets the LLM run `git status` and
+`git log -1 && git status`; allowing `ls` covers `ls -lah /var/log` but not
+`lsof`. Read-only filters after a pipe (`| grep x`, `| head`) and shell
+grammar (`for`, `if`, ...) need no entry. An entry like `bash` or `python3`
+allows anything, since `bash -lc '...'` is one argument. `exec_mode: strict`
+also refuses newlines, substitutions and redirections; `exec_mode:
+unrestricted` runs anything under the agent's identity, for trusted
+development hosts. Out of the box the config is restrictive — see
+`config.example.yaml` for the full starter list and the three modes.
 
 There are **two independent allowlists**, and they protect different ops:
 
-- `allowed_commands` gates `exec` (and the commands inside `script_run`).
+- `allowed_commands` gates `exec` (per `exec_mode`). It does NOT gate
+  `script_run`, which runs any script as the agent's user; turn it off with
+  `disabled_ops: [script_run]` where that matters.
 - `file_ops.paths` gates every filesystem primitive — the read-only ones
   (`sentinel_read`, `sentinel_list`, `sentinel_search`) on any `r` or `rw`
   entry, and the writing ones (`sentinel_edit`, `sentinel_move`,

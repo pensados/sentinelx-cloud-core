@@ -57,13 +57,18 @@ connects out to a hub via WebSocket and exposes operations as MCP tools.
 
 The hard rules:
 
-  1. **The agent only executes what's in the operator's allowlist.**
-     `allowed_commands` in `/etc/sentinelx/config.yaml` is the actual
-     security boundary. The unix user, the sudo policy, and the JWT
-     identity all matter, but the allowlist is the line that stays
-     enforced even if any of those is bypassed. A malicious or compromised
-     hub cannot make the agent run an arbitrary command — only one whose
-     prefix is already in the allowlist.
+  1. **The agent only does what the operator's policy allows.**
+     `/etc/sentinelx/config.yaml` is the security boundary, together with
+     the unix user and sudo policy the agent runs under. For `exec`,
+     `exec_mode` decides: in `allowlist` (the default) and `strict`, every
+     command in a line must be covered by `allowed_commands`, so a
+     malicious or compromised hub cannot make the agent run a command
+     outside that list through `exec`; in `unrestricted`, `exec` runs
+     anything the agent's account may run. `script_run` runs arbitrary
+     scripts as the agent's user and is NOT limited by `allowed_commands`:
+     where the allowlist must hold even against a compromised hub, disable
+     it with `disabled_ops: [script_run]` and keep `exec_mode` at
+     `allowlist` or `strict`.
 
   2. **The agent has no inbound listening ports.**
      Only one outbound WebSocket to the hub. There is no way to reach the
@@ -101,7 +106,7 @@ Reviewers can audit each defense at the linked path:
 
 | Defense | Code |
 |---|---|
-| Command allowlist (prefix match) | `src/sentinelx_core/executor.py` |
+| Command allowlist (whole-word match, every command in a chain, `exec_mode`) | `src/sentinelx_core/policy.py`, `src/sentinelx_core/segment_check.py`, `src/sentinelx_core/handlers/exec.py` |
 | Path-traversal rejection | `src/sentinelx_core/executor_engine.py` (`safe_path_under`) |
 | `file_url` SSRF defense | `src/sentinelx_core/handlers/upload.py` (`_validate_fetch_url`, `_is_safe_ip`, `_NoRedirectHandler`) |
 | `file_url` allowlist + timeout config | `src/sentinelx_core/policy.py` (`trusted_fetch_hosts`, `file_url_timeout_seconds`) |
