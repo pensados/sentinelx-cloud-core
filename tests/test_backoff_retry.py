@@ -34,9 +34,14 @@ def test_no_step_more_than_triples_the_previous_one():
         assert after <= before * 3, f"{before}s -> {after}s is too steep"
 
 
-def test_the_tail_stays_long():
-    # A hub that is genuinely down must not be hammered by the whole fleet.
-    assert max(BACKOFF_SCHEDULE) >= 300
+def test_the_tail_is_a_minute():
+    # Long enough that a hub that is genuinely down isn't hammered: with full
+    # jitter, ~3100 agents spread over 60 s is the wave every deploy absorbs (the
+    # hub can still ask for longer with Retry-After). Short enough that a host
+    # whose network comes back reconnects within a minute: at 300 s, hosts sat
+    # out up to 5 more minutes after an outage (returns at 12-17 min, 0.23.26).
+    assert max(BACKOFF_SCHEDULE) == 60
+    assert MAX_RETRY_AFTER_SECONDS >= 300   # the hub keeps its brake
 
 
 # --- jitter ----------------------------------------------------------------

@@ -58,7 +58,15 @@ logger = logging.getLogger(__name__)
 # hub was up the whole time. The tail stays long for the case the curve was
 # written for: the hub genuinely being down, where hammering it on the way
 # back up is how a fleet of ours takes it out again.
-BACKOFF_SCHEDULE = [0, 1, 2, 5, 10, 20, 30, 60, 120, 300]
+#
+# The tail stops at 60 s (0.23.26). With 120 and 300 s steps, an agent that went
+# through a network outage of a few minutes kept sleeping up to 5 minutes after
+# the network came back: orion, 2026-10-15, last failed attempt 20:07:35, then a
+# 265 s wait, connected at 20:12:01. Across the fleet that showed up as hosts
+# returning 12-17 minutes after a drop. At 60 s with full jitter, a fleet of
+# ~3100 comes back at ~50 connections/s, the same wave every deploy already
+# absorbs; and a hub that is up can still ask for longer with Retry-After.
+BACKOFF_SCHEDULE = [0, 1, 2, 5, 10, 20, 30, 60]
 
 # Cap on a hub-supplied retry hint. The hub knows things the agent cannot --
 # how many agents are reconnecting at once, whether it is mid-deploy -- so its
@@ -338,7 +346,7 @@ class HubClient:
                 # right back (e.g. a deploy). That is not a network failure,
                 # so don't grow the backoff — reset it and reconnect promptly.
                 # Otherwise a hub restart could leave an agent that already
-                # had a high attempt count waiting up to 300s to return.
+                # had a high attempt count waiting up to the top of the curve.
                 if exc.code == 1012:
                     retry_hint = parse_retry_after(_close_reason(exc))
                     logger.info(

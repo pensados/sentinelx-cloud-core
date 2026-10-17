@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.26 - Reconnect within a minute after a network outage - 2026-10-17
+
+The reconnect curve topped out at 120 and 300 s (with full jitter), so an agent that went through a
+network outage of a few minutes kept sleeping up to 5 minutes after the network came back. orion on
+2026-10-15: last failed attempt 20:07:35, a 265 s wait, connected at 20:12:01. Across the fleet this
+showed up as a bump of hosts returning 12-17 minutes after a drop, on every agent version.
+
+- client.BACKOFF_SCHEDULE now tops out at 60 s: [0, 1, 2, 5, 10, 20, 30, 60]. Jitter, the early
+  steps, the deploy path (1012 + the hub's hint) and MAX_RETRY_AFTER_SECONDS (300, the hub's brake)
+  are unchanged. With full jitter, ~3100 agents return at ~50 connections/s after a real hub outage,
+  the same wave every deploy absorbs.
+- tests/test_backoff_retry.py: test_the_tail_is_a_minute replaces test_the_tail_stays_long. 1 sabotage caught.
+
 ## 0.23.25 - Restarting another Windows task or service no longer kills the agent - 2026-10-17
 
 On Windows, every Scheduled-Task restart used the hardened self-restart, which force-kills the
