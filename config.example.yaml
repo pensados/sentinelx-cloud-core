@@ -17,7 +17,7 @@
 #   sudo systemctl restart sentinelx-cloud-core
 #
 # Security model:
-#   - 'exec' op only runs commands prefix-matching this allowlist
+#   - 'exec' op only runs command lines covered by allowed_commands (see exec_mode)
 #   - 'edit' op respects unix file permissions (sudo NOPASSWD if installed)
 #   - 'service' op only manages units listed in `services:` below
 #
@@ -349,10 +349,11 @@ playbooks:
       - "Avoid adding commands that grant broad privilege escalation (su,
          chsh, visudo, unrestricted sudo, etc.) without warning the user.
          The whole point of the allowlist is to be conservative."
-      - "Allowed commands are matched as PREFIXES, not exact strings. So
-         'sudo cat' allows 'sudo cat /etc/passwd' but NOT 'sudo cattool'.
-         When adding a new entry, think about what completions of that
-         prefix should be reachable."
+      - "Allowed commands match WHOLE WORDS (agent 0.23.22+): 'sudo cat'
+         allows 'sudo cat /etc/passwd' but not 'sudo cattool'. With
+         exec_mode: allowlist, every command of a chained line must be
+         covered, not just the first, so think about which command words
+         an entry opens. An entry like 'bash' or 'python3' opens anything."
 
   add_allowed_read_path:
     description: |
@@ -1234,7 +1235,7 @@ file_ops:
 # TWO RULES WORTH UNDERSTANDING BEFORE WRITING YOUR OWN:
 #
 # 1. `actions` is the entire security boundary, and it is required. `exec` is
-#    bounded by command prefixes, but a socket bridge is bounded only by what
+#    bounded by allowed_commands (exec_mode), but a socket bridge is bounded only by what
 #    the far side exposes, which the agent cannot see or enumerate. An endpoint
 #    that declares no actions is NOT registered.
 #
