@@ -53,10 +53,29 @@ _WIN_SVC_HOST_KIND = "Windows host"
 _WIN_TASK_HOST_KIND = "Windows host (per-user Scheduled Task)"
 
 
+_MAC_LABEL = "app.sentinelx.core"
+_MAC_SYSTEM_PLIST = f"/Library/LaunchDaemons/{_MAC_LABEL}.plist"
+
+
+def _mac_manual_restart() -> str:
+    """The terminal command that restarts this Mac's agent.
+
+    install-macos.sh defaults to a per-user LaunchAgent (gui/<uid>); 'system'
+    mode installs a LaunchDaemon instead. Both run as the same user, so the
+    plist that exists is what tells them apart. Until 0.23.27 this always said
+    system/..., wrong for the default install (sxrep_R8S7B8ARNM54).
+    """
+    import os
+
+    if os.path.exists(_MAC_SYSTEM_PLIST):
+        return f"sudo launchctl kickstart -k system/{_MAC_LABEL}"
+    return f"launchctl kickstart -k gui/$(id -u)/{_MAC_LABEL}"
+
+
 # Manual restart command for a real terminal (when the service op isn't usable).
 MANUAL_RESTART = _pick(
     _WIN_SVC_MANUAL_RESTART,
-    "sudo launchctl kickstart -k system/app.sentinelx.core",
+    _mac_manual_restart() if _DARWIN else "",
     "sudo systemctl restart sentinelx-cloud-core",
 )
 

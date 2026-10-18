@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.27 - The macOS restart hint matches how the agent was installed - 2026-10-18
+
+On macOS, the hint in a command_not_allowed refusal (and anywhere else MANUAL_RESTART is used) always
+said 'sudo launchctl kickstart -k system/app.sentinelx.core', the command for the optional
+LaunchDaemon. install-macos.sh defaults to a per-user LaunchAgent, where that command is wrong
+(sxrep_R8S7B8ARNM54).
+
+- platform_guidance._mac_manual_restart(): system/... when /Library/LaunchDaemons/app.sentinelx.core.plist
+  exists, otherwise 'launchctl kickstart -k gui/$(id -u)/app.sentinelx.core' (both modes run as the same
+  user, so the plist is what tells them apart).
+- tests/test_macos_manual_restart.py (2). 1 sabotage caught.
+
 ## 0.23.26 - Reconnect within a minute after a network outage - 2026-10-17
 
 The reconnect curve topped out at 120 and 300 s (with full jitter), so an agent that went through a
