@@ -211,7 +211,13 @@ def make_exec_handler(policy: Policy):
                     },
                 )
 
-        if not policy.is_command_allowed(command):
+        # On POSIX every segment, the first included, is checked on its own: by
+        # the chain check below, or by the strict check above. Checking the whole
+        # string here as well refused `uptime; ls` because the ';' touches
+        # `uptime`, before the chain check could look (0.23.28). Windows has no
+        # segment check (exec runs PowerShell), so there the whole string still
+        # answers, and `ls;rm x` stays refused.
+        if sys.platform == "win32" and not policy.is_command_allowed(command):
             problem, suggestion = _classify_rejection(command)
             raise HandlerError(
                 "command_not_allowed",
@@ -246,9 +252,13 @@ def make_exec_handler(policy: Policy):
                     "command_not_allowed",
                     f"`{word}` (in {offending!r}) is not in allowed_commands for "
                     f"this host. Every command in a chain is checked: after ; && "
-                    f"|| | & or a new line, and inside $(...). Add `{word}` to "
-                    f"allowed_commands in config.yaml if it should be allowed, or "
-                    f"use script_run for a workflow.",
+                    f"|| | & or a new line, and inside $(...). If it's safe and "
+                    f"routine, it can be added with the operator's approval, in "
+                    f"three steps: (1) {_pg.config_edit_step()}, inserting a new "
+                    f"line '  - {word}' under the 'allowed_commands:' list; "
+                    f"(2) {_pg.reload_agent()}; (3) confirm with the capabilities "
+                    f"op that '{word}' now appears in allowed_commands. For a "
+                    f"one-off that leaves the policy unchanged, use script_run.",
                     details={
                         "command": command,
                         "offending_segment": offending,

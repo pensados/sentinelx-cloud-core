@@ -3,6 +3,21 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.28 - `uptime; ls` is no longer refused for the ';' touching `uptime` - 2026-10-19
+
+Since 0.23.22 an allowed_commands entry matches as a whole word: whitespace or the end of the string
+after it. On POSIX the whole command line was checked that way before the chain check, so a first
+command without arguments followed directly by ; | or & (`uptime; ls`, `pwd&& ls`) was refused even
+with every command allowed, with an outdated message about prefixes. Found testing an Android/PRoot
+host.
+
+- handlers/exec: on POSIX each segment, the first included, answers on its own (the chain check, or
+  the strict check); the whole-string check stays on Windows only, where exec runs PowerShell and
+  there is no segment check, so `ls;rm x` is still refused there.
+- The chain check's refusal now carries the same how-to-add guidance (edit the config with the
+  operator's approval, reload the agent, confirm) the old refusal gave.
+- tests/test_exec_first_command_boundary.py (12). 1 sabotage caught.
+
 ## 0.23.27 - The macOS restart hint matches how the agent was installed - 2026-10-18
 
 On macOS, the hint in a command_not_allowed refusal (and anywhere else MANUAL_RESTART is used) always
