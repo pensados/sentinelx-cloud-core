@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.29 - An edited file gets a new mtime - 2026-10-21
+
+sentinel_edit replaces a file atomically and copied the original's metadata onto the new one with
+shutil.copystat, which also copies atime and mtime. An edited file kept its OLD mtime, so anything
+that decides by mtime missed the change: PHP OPcache with validate_timestamps kept serving the old
+code until PHP-FPM restarted; make, rsync -u and file watchers the same (sxrep_HGZJZXHF7RD7).
+
+- vendored/pensa_safe_edit.copy_metadata: after copystat (mode, flags, extended attributes such as the
+  SELinux label) and chown, set the times to now. Applies to an edit and to a restore, both of which
+  write new content. Backups are still made with copy2 and keep the original's times.
+- tests/test_edit_advances_mtime.py (4). 1 sabotage caught.
+
 ## 0.23.28 - `uptime; ls` is no longer refused for the ';' touching `uptime` - 2026-10-19
 
 Since 0.23.22 an allowed_commands entry matches as a whole word: whitespace or the end of the string

@@ -148,10 +148,19 @@ class MetadataResult:
 
 
 def copy_metadata(src: Path, dst: Path) -> MetadataResult:
-    """Copy stat + ownership from src to dst.
+    """Copy mode, flags, extended attributes and ownership from src to dst;
+    give dst the current time.
 
-    shutil.copystat (mode/atime/mtime/flags) is best-effort and rarely
-    fails. os.chown CAN fail with PermissionError when the running
+    dst always carries NEW content (an edit, or a restore from a backup), so
+    its mtime must move: tools that decide by mtime (PHP OPcache with
+    validate_timestamps, make, rsync -u, any file watcher) have to see the
+    change. Until 0.23.29 copystat also copied src's atime/mtime and an edited
+    PHP file kept serving the old code until PHP-FPM restarted
+    (sxrep_HGZJZXHF7RD7). Backups are made with copy2 elsewhere and keep the
+    original's times, which is right for them.
+
+    shutil.copystat (mode/flags/xattrs, e.g. the SELinux label) is
+    best-effort and rarely fails. os.chown CAN fail with PermissionError when the running
     process is not root and not the file's owner — which is exactly the
     common case for the agent (runs as its service user, edits files
     owned by someone else).
@@ -164,6 +173,7 @@ def copy_metadata(src: Path, dst: Path) -> MetadataResult:
     """
     res = MetadataResult()
     shutil.copystat(src, dst, follow_symlinks=False)
+    os.utime(dst)  # new content, new mtime (and atime): see the docstring
     chown = getattr(os, "chown", None)
     if chown is None:
         # Windows: no POSIX ownership model (os.chown doesn't exist); ACLs
