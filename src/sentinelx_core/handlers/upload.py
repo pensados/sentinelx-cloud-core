@@ -169,7 +169,11 @@ def _finalize(tmp: Path, dest: Path) -> None:
     part = dest.parent / f".{dest.name}.sentinelx-{uuid.uuid4().hex[:8]}.part"
     try:
         shutil.copyfile(tmp, part)
-        with open(part, "rb") as fh:
+        # r+b, not rb: on Windows fsync (_commit) needs a handle open for
+        # writing and a read-only one fails with "[Errno 9] Bad file
+        # descriptor", so every upload to another drive (staging on C:, target
+        # on G:) failed at the very end (0.23.30). POSIX accepts either.
+        with open(part, "r+b") as fh:
             os.fsync(fh.fileno())
         os.replace(part, dest)
     finally:

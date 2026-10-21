@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.30 - Uploads to another drive work on Windows - 2026-10-21
+
+When an upload's destination is on another filesystem than the staging area (0.23.17), _finalize
+copies the file and fsyncs the copy before renaming it. It opened the copy read-only; on Windows
+fsync (_commit) needs a handle open for writing and failed with "[Errno 9] Bad file descriptor".
+Every upload to another drive (staging on C:, target on G:) failed at the very end, after every
+byte had arrived: seen as internal_error from sentinel_file_upload_attachment, the upload links and
+sentinel_transfer_file.
+
+- handlers/upload._finalize: open the copy r+b for the fsync (POSIX accepts either).
+- tests/test_upload_finalize_other_drive.py (2; emulates Windows' rule on POSIX). 1 sabotage caught.
+
 ## 0.23.29 - An edited file gets a new mtime - 2026-10-21
 
 sentinel_edit replaces a file atomically and copied the original's metadata onto the new one with
