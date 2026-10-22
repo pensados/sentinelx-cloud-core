@@ -3,6 +3,37 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.31 - local_api speaks JSON-RPC to a declared binary over stdio - 2026-10-22
+
+Policy accepted `transport: stdio` on a local_apis endpoint since 0.12.0, and the docstring said only
+stdio had a binary at `path`, but no version implemented it: call_action chose by protocol alone, so
+every call opened `path` as a unix socket and failed with a misleading endpoint_unreachable (reported
+2026-10-22). It now works, and with it local_api works on Windows, which has no unix sockets.
+
+- local_api.call_stdio_jsonrpc: one process per call, started without a shell as [path, *args];
+  one JSON-RPC request per line on stdin, stdout read until the response with the same id
+  (notifications and other ids skipped, requests from the server answered -32601). stdin closed
+  after the answer, process group killed after a 2 s grace; timeout_s covers the whole call. stdout
+  capped at MAX_RESPONSE_BYTES (too_large), stderr kept to its last 8 KiB for error messages. The
+  child gets a minimal environment plus the declared `env`. Exiting before answering is bad_response
+  with the exit code and the stderr tail.
+- handshake: mcp sends initialize and notifications/initialized first, so an MCP server over stdio
+  can be declared directly (tools/list, tools/call).
+- run_as goes through `sudo -n -u <user> -- <path> <args>`; a refused sudo answers
+  run_as_not_permitted with the exact sudoers line.
+- binary_problem: a binary, or a directory holding it, writable by anyone but its owner is skipped at
+  load and refused before each call (unsafe_binary). A binary not installed yet still registers.
+- Compatibility: the probe goes over the same transport, and for stdio the epoch is the binary itself
+  (inode, size, mtime), so an upgraded binary is probed again instead of inheriting the old verdict.
+- policy: stdio needs protocol jsonrpc and an absolute path; new optional fields args (fixed list),
+  cwd, env (not with run_as: sudo would drop it), handshake (none | mcp). Set on a unix endpoint they
+  are ignored with a warning.
+- describe shows transport, and for stdio path, handshake and the number of args (not their values).
+- config.example.yaml (stdio section, MCP example, the tools/call caveat), README (sentinel_local_api
+  row), THREAT_MODEL §4.8.
+- tests/test_local_api_stdio.py (33, real child processes) and test_local_api_stdio_windows.py (2,
+  skipped off Windows). 16 sabotages, 16 caught.
+
 ## 0.23.30 - Uploads to another drive work on Windows - 2026-10-21
 
 When an upload's destination is on another filesystem than the staging area (0.23.17), _finalize

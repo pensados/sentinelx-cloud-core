@@ -184,9 +184,14 @@ class LocalApiAction:
 class LocalApiEndpoint:
     """A host-local endpoint the agent may talk to.
 
-    `path` is NOT a binary and actions are NOT subcommands. With transport
-    "unix" the agent OPENS a socket: no process, no shell, no argv, no exit
-    code. Only transport "stdio" has a binary at `path`.
+    With transport "unix", `path` is NOT a binary and actions are NOT
+    subcommands: the agent OPENS a socket, so there is no process, no shell,
+    no argv and no exit code.
+
+    With transport "stdio", `path` IS a binary, declared here by the host's
+    owner. The agent starts it once per call (no shell, argv = path + the
+    FIXED `args`), writes JSON-RPC to its stdin and reads the answer from its
+    stdout. Action parameters travel only inside the JSON, never in argv.
     """
 
     name: str
@@ -217,9 +222,106 @@ class LocalApiEndpoint:
     # half-enforced, because a constraint that silently does nothing is worse
     # than no constraint: it reads as protection that is not there.
     compatibility: dict[str, Any] = field(default_factory=dict)
+    # transport "stdio" only (validated in _parse_stdio_options).
+    #
+    # `args` is a FIXED list from this file. It is never built from a call's
+    # parameters: those travel inside the JSON-RPC message and nowhere else, so
+    # nothing a caller sends can become an argument, a flag or a file name.
+    args: tuple[str, ...] = ()
+    cwd: str | None = None
+    # Added on top of a minimal environment (PATH, HOME, locale), never on top
+    # of the agent's own: the agent's environment is not the endpoint's
+    # business, and with run_as sudo would reset it anyway.
+    env: dict[str, str] = field(default_factory=dict)
+    # "none": the first line written is the action's request.
+    # "mcp":  initialize + notifications/initialized first, as an MCP server
+    #         over stdio requires before it answers anything else.
+    handshake: str = "none"
 
 
 EXEC_MODES = frozenset({"allowlist", "strict", "unrestricted"})
+
+
+_STDIO_KEYS = ("args", "cwd", "env", "handshake")
+_STDIO_HANDSHAKES = ("none", "mcp")
+
+
+def _is_scalar_text(value: Any) -> bool:
+    """A YAML scalar that reads as text: `--port` or 8080, not true or a list."""
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
+def _parse_stdio_options(
+    name: str, meta: dict, protocol: str, path_value: str
+) -> dict[str, Any] | None:
+    """Validate the transport-stdio fields of one local_apis endpoint.
+
+    Returns the extra LocalApiEndpoint fields, or None after a warning when the
+    endpoint must not be registered. Same rule as the rest of the block: a
+    malformed endpoint is skipped loudly, never registered half-configured.
+    """
+
+    def skip(why: str) -> None:
+        logger.warning("local_apis: %s (transport stdio) %s; skipped", name, why)
+
+    if protocol != "jsonrpc":
+        # JSON-RPC over stdio is how MCP servers and language servers run.
+        # HTTP over a pipe is not something tools speak.
+        return skip(f"needs protocol jsonrpc, got {protocol!r}")
+    if not os.path.isabs(path_value):
+        # A relative path would resolve against whatever directory the agent
+        # happens to run in, or a PATH lookup: neither is a declaration.
+        return skip(f"needs an absolute path to the binary, got {path_value!r}")
+
+    raw_args = meta.get("args")
+    if raw_args is None:
+        args: tuple[str, ...] = ()
+    elif isinstance(raw_args, list) and all(_is_scalar_text(a) for a in raw_args):
+        args = tuple(str(a) for a in raw_args)
+    else:
+        return skip("has `args` that is not a list of strings")
+
+    cwd = meta.get("cwd")
+    if cwd is not None and (not isinstance(cwd, str) or not os.path.isabs(cwd)):
+        return skip(f"needs an absolute `cwd`, got {cwd!r}")
+
+    raw_env = meta.get("env")
+    env: dict[str, str] = {}
+    if raw_env is not None:
+        if not isinstance(raw_env, dict) or not all(
+            isinstance(k, str) and k and "=" not in k and _is_scalar_text(v)
+            for k, v in raw_env.items()
+        ):
+            return skip("has `env` that is not a mapping of names to strings")
+        env = {k: str(v) for k, v in raw_env.items()}
+    if env and meta.get("run_as"):
+        # sudo resets the environment, and letting variables through needs
+        # SETENV in sudoers: a far wider grant than the one rule run_as asks
+        # for. Refusing beats variables that silently never arrive.
+        return skip(
+            "sets both `env` and `run_as`; sudo would drop the variables "
+            "(set them in the binary's own configuration instead)"
+        )
+
+    handshake = str(meta.get("handshake") or "none").strip().lower()
+    if handshake not in _STDIO_HANDSHAKES:
+        return skip(f"has handshake={handshake!r}; expected none or mcp")
+
+    from sentinelx_core.local_api import binary_problem
+
+    problem = binary_problem(path_value, run_as=meta.get("run_as"))
+    if problem is not None:
+        code, message = problem
+        if code == "unsafe_binary":
+            return skip(message)
+        # Missing or not executable does not drop it: it may be installed
+        # after the agent starts, like a socket that is down at boot. Each
+        # call re-checks and reports it.
+        logger.warning(
+            "local_apis: %s (transport stdio): %s; registered anyway, calls "
+            "fail until it is fixed", name, message,
+        )
+    return {"args": args, "cwd": cwd, "env": env, "handshake": handshake}
 
 
 def _resolve_exec_mode(data: dict) -> str:
@@ -566,6 +668,19 @@ class Policy:
             if not path_value:
                 logger.warning("local_apis: %s has no path; skipped", name)
                 continue
+            stdio_opts: dict[str, Any] = {}
+            if transport == "stdio":
+                parsed = _parse_stdio_options(str(name), meta, protocol, path_value)
+                if parsed is None:
+                    continue
+                stdio_opts = parsed
+            else:
+                stray = [k for k in _STDIO_KEYS if k in meta]
+                if stray:
+                    logger.warning(
+                        "local_apis: %s sets %s, which only apply to transport "
+                        "stdio; ignored", name, ", ".join(stray),
+                    )
             if not isinstance(raw_actions, dict) or not raw_actions:
                 # Deliberate: no list, no endpoint. Registering one without an
                 # action allowlist would expose whatever the far side happens
@@ -663,6 +778,7 @@ class Policy:
                 timeout_s=float(meta.get("timeout_s") or 30),
                 run_as=str(meta["run_as"]) if meta.get("run_as") else None,
                 compatibility=compat if isinstance(compat, dict) else {},
+                **stdio_opts,
             )
 
         locations: dict[str, LocationSpec] = {}

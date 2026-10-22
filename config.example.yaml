@@ -1245,9 +1245,11 @@ file_ops:
 #    the answer is worse than the text it replaces. Omit it only for endpoints
 #    whose replies are already small.
 #
-# `path` is NOT a binary and actions are NOT subcommands: with transport
-# `unix` the agent opens a socket, so there is no process, no argv and no
-# shell. The whole shell-injection class cannot occur on this path.
+# With transport `unix`, `path` is NOT a binary and actions are NOT
+# subcommands: the agent opens a socket, so there is no process, no argv and
+# no shell. The whole shell-injection class cannot occur on this path. (With
+# transport `stdio`, at the end of this section, `path` is a binary you
+# declare, still without a shell.)
 #
 # ON `run_as`. Some endpoints create their socket 0600 and check who is
 # connecting, so reaching one means BEING its owner, not merely having
@@ -1337,3 +1339,70 @@ file_ops:
 # missing any of the three keys is dropped with a warning instead of being
 # half-enforced, because a constraint that silently does nothing reads as
 # protection that is not there.
+#
+# ── transport: stdio  —  a binary that speaks JSON-RPC on stdin/stdout ──────
+#
+# For tools that run as a process instead of listening on a socket: MCP
+# servers launched over stdio, language servers, small JSON-RPC helpers. It is
+# also the transport that works on Windows, which has no unix sockets.
+#
+# Here `path` IS a binary, and you declare it. The agent starts it once per
+# call, writes the JSON-RPC request as one line, reads stdout until the answer
+# with the same id, then stops it: stdin closed, and whatever is still running
+# after a short grace killed as a whole process tree. There is no shell: argv
+# is `path` plus the FIXED `args`, and a call's parameters travel only inside
+# the JSON message, never as arguments, flags or file names.
+#
+#   protocol   must be jsonrpc.
+#   path       absolute. The binary, and the directories holding it, must not
+#              be writable by anyone but their owner: whoever can replace the
+#              file chooses what the agent runs. Such an endpoint is skipped at
+#              load and refused at call time (unsafe_binary). A binary that does
+#              not exist yet still registers; calls fail until it is installed.
+#   args       optional, a fixed list. `describe` shows how many, not what they
+#              are, so a token passed this way is not echoed to the model.
+#   cwd        optional, absolute.
+#   env        optional variables, added to a MINIMAL environment (PATH, HOME,
+#              locale; the system variables on Windows). The agent's own
+#              environment is not passed on.
+#   handshake  none (default) | mcp. With mcp the agent sends `initialize` and
+#              `notifications/initialized` first, as an MCP server requires.
+#   timeout_s  the whole call: start-up and handshake included.
+#   run_as     starts it as `sudo -n -u <user> -- <path> <args>`. The sudoers
+#              rule names that exact command and nothing wider, e.g.
+#                sentinelx ALL=(youruser) NOPASSWD: /opt/tools/bin/inventory --stdio
+#              `env` cannot be combined with run_as: sudo would drop it.
+#
+# ON MCP SERVERS. The allowlist is of METHODS. An action with
+# `method: tools/call` reaches EVERY tool the server offers, whatever its
+# `params` schema says: the schema is shown to the caller, not enforced. Pick
+# servers whose whole tool set you accept, or limit their tools with the
+# server's own options in `args`.
+#
+#   # inventory:
+#   #   transport: stdio
+#   #   protocol: jsonrpc
+#   #   path: /opt/tools/bin/inventory
+#   #   args: ["--stdio"]
+#   #   timeout_s: 15
+#   #   actions:
+#   #     hosts.list: { method: hosts.list }
+#   #
+#   # An MCP server over stdio, declared the way an MCP client declares it:
+#   # files:
+#   #   transport: stdio
+#   #   protocol: jsonrpc
+#   #   path: /usr/bin/node              # Windows: 'C:\Program Files\nodejs\node.exe'
+#   #   args: ["/opt/mcp/server-filesystem/dist/index.js", "/srv/shared"]
+#   #   handshake: mcp
+#   #   timeout_s: 30
+#   #   actions:
+#   #     tools.list: { method: tools/list }
+#   #     tools.call:
+#   #       method: tools/call             # params: { name, arguments }
+#   #       params:
+#   #         type: object
+#   #         required: [name]
+#   #         properties:
+#   #           name: { type: string }
+#   #           arguments: { type: object }

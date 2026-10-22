@@ -219,6 +219,17 @@ vector, mitigation, and residual risk.
 | **Mitigation** | The agent doesn't expose any local socket or named pipe. There is no IPC for local users to abuse. `identity.json` is mode 0600 and `config.yaml` is mode 0644 (readable but writes need sudo). The sudoers fragment is locked to specific binaries (`pensa-safe-edit`, listed services), not a wildcard. |
 | **Residual risk** | Acknowledged. If you don't trust the local users on a host, don't enroll that host. |
 
+### 4.8 — `local_api` with transport stdio runs a declared binary (0.23.31)
+
+| | |
+|---|---|
+| **STRIDE category** | Elevation of Privilege / Tampering |
+| **Attacker** | A1, A2; A3 for the binary-replacement vector |
+| **Vector** | (1) Craft `params` so they reach the binary's argv or a shell. (2) Replace the declared binary, or a directory entry on its path, so the agent runs something else. (3) Leave a child running after the call (a server that ignores EOF, or spawns helpers). (4) Reach tools of an MCP server the operator did not mean to expose. |
+| **Severity** | High if (1) or (2) were possible; Medium for (4) |
+| **Mitigation** | The binary is declared by the host's owner in `config.yaml` (absolute path, fixed `args`); the caller only picks an allowlisted action. (1) No shell: `create_subprocess_exec` with argv `[path, *args]`, and the call's parameters are serialized into the JSON-RPC message only. (2) `binary_problem()` refuses a binary that is, or sits in a directory that is, writable by anyone but its owner (a sticky directory and a user-private group excepted), at load (endpoint skipped) and again before every call (`unsafe_binary`). (3) One process per call, in its own session; stdin is closed after the answer, then the process group is killed after a 2 s grace, and the whole call is bounded by `timeout_s`. stdout is capped at 8 MiB, stderr kept to its last 8 KiB. The child gets a minimal environment plus the declared `env`, never the agent's. (4) Documented: the allowlist is of methods, so `tools/call` reaches every tool of that server. `run_as` goes through `sudo -n -u <user> -- <path> <args>`, which needs a sudoers rule naming that exact command. Tests: `test_local_api_stdio.py` (33, 16 sabotages caught). |
+| **Residual risk** | Whatever the declared binary itself does with its input is the binary's responsibility; this is the same trust the owner extends by installing it. Per-tool allowlisting inside an MCP server is not implemented. With `run_as`, the child runs as another user and the agent may not be able to signal it; it relies on the child exiting at EOF and stops waiting after a bounded grace. On Windows the permission check is skipped (ACLs are the operator's job) and helpers left by a child that already exited are not swept. |
+
 
 ## 5. Residual risks we accept
 

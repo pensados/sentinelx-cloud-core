@@ -81,6 +81,18 @@ def make_local_api_handler(policy: Policy):
                 "operation": "describe",
                 "endpoint": endpoint.name,
                 "protocol": endpoint.protocol,
+                "transport": endpoint.transport,
+                # For stdio, what runs. The COUNT of args and not their values:
+                # an operator may put a token or a private path there.
+                **(
+                    {
+                        "path": endpoint.path,
+                        "handshake": endpoint.handshake,
+                        "arg_count": len(endpoint.args),
+                    }
+                    if endpoint.transport == "stdio"
+                    else {}
+                ),
                 "actions": {
                     an: {
                         "request": a.request,

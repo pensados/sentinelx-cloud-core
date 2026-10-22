@@ -123,6 +123,7 @@ The agent exposes its host's operations as MCP tools to your LLM via the hub:
 | `sentinel_read` | Read a file's contents, with optional line-range slicing |
 | `sentinel_list` | Structured directory listing (name, type, size, mtime) |
 | `sentinel_search` | Recursive content search with regex and glob filters |
+| `sentinel_local_api` | Allowlisted actions on host-local structured endpoints: a unix socket (HTTP or JSON-RPC) or a declared binary over stdio (JSON-RPC, MCP servers included). Only when the host declares `local_apis` |
 | `sentinel_capabilities` | Host policy/capabilities; optional bounded summary projection |
 | `sentinel_help` | Rich orientation/help; optional topic/path/single-playbook projections |
 | `sentinel_state` | Internal agent state, for debugging |
