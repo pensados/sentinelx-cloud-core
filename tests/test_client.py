@@ -157,6 +157,9 @@ class HubClientKeepaliveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_kwargs["ping_interval"], 30)
         self.assertEqual(call_kwargs["ping_timeout"], 60)
         self.assertEqual(call_kwargs["max_size"], MAX_BINARY_FRAME_BYTES)
+        # Several hub addresses (mcp-direct, 2026-10-23): race the next one quickly.
+        self.assertEqual(call_kwargs["happy_eyeballs_delay"], client_module.HAPPY_EYEBALLS_DELAY)
+        self.assertEqual(call_kwargs["interleave"], 1)
         self.assertTrue(client._session_established)
 
     async def test_application_ping_heartbeat_remains_active(self) -> None:

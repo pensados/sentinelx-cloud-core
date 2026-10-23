@@ -68,6 +68,10 @@ logger = logging.getLogger(__name__)
 # absorbs; and a hub that is up can still ask for longer with Retry-After.
 BACKOFF_SCHEDULE = [0, 1, 2, 5, 10, 20, 30, 60]
 
+# Seconds before trying the hub's next address when the first one doesn't answer
+# (RFC 8305 recommends 250 ms). See _run_once's websockets.connect.
+HAPPY_EYEBALLS_DELAY = 0.25
+
 # Cap on a hub-supplied retry hint. The hub knows things the agent cannot --
 # how many agents are reconnecting at once, whether it is mid-deploy -- so its
 # suggestion is worth following. It is a suggestion, though: a buggy or hostile
@@ -395,6 +399,13 @@ class HubClient:
             ping_interval=30,
             ping_timeout=60,
             max_size=MAX_BINARY_FRAME_BYTES,
+            # Passed through to loop.create_connection: when the hub name has
+            # several addresses (mcp-direct has two relays since 2026-10-23) and
+            # the first doesn't answer, e.g. filtered in this agent's network,
+            # race the next one after a short delay instead of spending the
+            # whole open_timeout on the first and never trying the second.
+            happy_eyeballs_delay=HAPPY_EYEBALLS_DELAY,
+            interleave=1,
         ) as ws:
             # 1. Send hello
             hello = HelloMessage(

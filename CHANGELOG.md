@@ -3,6 +3,20 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.32 - Connect through whichever hub address answers - 2026-10-23
+
+mcp-direct.sentinelx.app has two relays since 2026-10-23 (orion, and venus on DigitalOcean), so the
+name resolves to two addresses. Some networks can't reach one of them: packets are dropped and the TCP
+connect hangs. loop.create_connection tries addresses one by one, so the whole websockets open_timeout
+(10 s) ran out on the first and the second was never tried; a host whose resolver always sorted the
+unreachable address first might never connect.
+
+- client: websockets.connect passes happy_eyeballs_delay=0.25 (RFC 8305) and interleave=1 to
+  create_connection: the next address is raced after 250 ms and the first to answer wins.
+- tests/test_happy_eyeballs.py: a local server behind a fake two-address resolver whose first address
+  never answers connects in under 2 s, and times out without the race. tests/test_client.py asserts the
+  kwargs. 1 sabotage caught.
+
 ## 0.23.31 - local_api speaks JSON-RPC to a declared binary over stdio - 2026-10-22
 
 Policy accepted `transport: stdio` on a local_apis endpoint since 0.12.0, and the docstring said only
