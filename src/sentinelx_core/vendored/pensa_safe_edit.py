@@ -497,6 +497,10 @@ class EditSpec:
     dry_run: bool = False
     allow_no_change: bool = False
     create: bool = False
+    # No <name>.bak.<ts> copy of the previous content. For secret writes: the
+    # backup would leave the OLD credential next to the new one, in the same
+    # directory (maybe one a web server serves).
+    no_backup: bool = False
 
 
 @dataclass
@@ -748,7 +752,8 @@ def apply_edit(spec: EditSpec) -> EditResult:
             result.dry_run = True
             return result
 
-        result.backup = str(make_backup(target, backup_dir))
+        if not spec.no_backup:
+            result.backup = str(make_backup(target, backup_dir))
         _install(tmp_path, target, result)
         return result
     except SafeEditError:
@@ -809,7 +814,7 @@ def _render_result(result: EditResult) -> None:
         return
 
     print(f"OK: edited {result.target}")
-    print(f"BACKUP: {result.backup}")
+    print(f"BACKUP: {result.backup or 'none'}")
     print(f"CHANGES: {result.changed}")
     if result.validator:
         print(f"VALIDATOR: {' '.join(result.validator)}")
@@ -842,6 +847,7 @@ def _spec_from_args(args: argparse.Namespace) -> EditSpec:
         dry_run=args.dry_run,
         allow_no_change=args.allow_no_change,
         create=args.create,
+        no_backup=args.no_backup,
     )
 
 
@@ -927,6 +933,10 @@ def main() -> int:
     parser.add_argument(
         "--create", action="store_true",
         help="Create the file if it does not exist",
+    )
+    parser.add_argument(
+        "--no-backup", action="store_true",
+        help="Do not keep a .bak copy of the previous content",
     )
     args = parser.parse_args()
 

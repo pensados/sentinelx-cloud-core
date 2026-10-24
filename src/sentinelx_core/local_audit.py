@@ -126,6 +126,23 @@ def _compact(value: Any) -> Any:
     return value
 
 
+# A payload marked secret=true (an edit the hub sends from a secret link page)
+# keeps everything that says what was done, but not the text: the user typed a
+# credential into that page precisely so it would not be recorded anywhere. Not
+# even a hash: a hash of a short secret can be guessed.
+_SECRET_FIELDS = ("new_text", "old")
+
+
+def _without_secret(payload: Any) -> Any:
+    if not isinstance(payload, dict) or payload.get("secret") is not True:
+        return payload
+    out = dict(payload)
+    for k in _SECRET_FIELDS:
+        if isinstance(out.get(k), str):
+            out[k] = {"omitted": "secret", "chars": len(out[k])}
+    return out
+
+
 def record(op: str, payload: dict[str, Any], ok: bool,
            error: str | None = None, duration_ms: int | None = None,
            result_ok: bool | None = None,
@@ -151,7 +168,7 @@ def record(op: str, payload: dict[str, Any], ok: bool,
         entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
             "op": op,
-            "payload": _compact(payload),
+            "payload": _compact(_without_secret(payload)),
             "ok": ok,
             "error": error,
             "duration_ms": duration_ms,

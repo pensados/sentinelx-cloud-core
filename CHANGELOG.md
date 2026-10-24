@@ -3,6 +3,26 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.33 - edit takes secret=true, for the hub's secret links - 2026-10-24
+
+The hub's new secret links (hub 0.57.29) let a user type a credential into a page so it is written
+into a file on the host without entering the conversation. Writing it with a plain edit would have kept
+it in three places on the host: the safe edit's <name>.bak.<ts> copy of the PREVIOUS content, next to
+the file; a diff, if one were asked for; and the local audit, which records every payload as-is and
+which the dashboard's Activity page shows through read_audit.
+
+- edit: payload secret=true forces --no-backup and refuses diff, create and backup_dir
+  (invalid_payload).
+- pensa_safe_edit: --no-backup (EditSpec.no_backup) skips make_backup; the result says BACKUP: none.
+- local_audit: a payload with secret=true keeps op, path, mode and pattern, but new_text and old are
+  recorded as {"omitted": "secret", "chars": N}. No hash: a hash of a short secret can be guessed.
+- executor: capability_names() adds edit_secret while edit is enabled (PAYLOAD_FEATURES, kept apart
+  from PROTOCOL_FEATURES, which must be RequestMessage fields). The hub refuses secret links for an
+  agent that does not advertise it. No protocol change.
+- tests/test_edit_secret.py: 11 tests (no copy left, value absent from output and staging, refusals,
+  audit redacted on success and on handler error, ordinary edits unchanged, the capability follows
+  edit). 6 sabotages caught.
+
 ## 0.23.32 - Connect through whichever hub address answers - 2026-10-23
 
 mcp-direct.sentinelx.app has two relays since 2026-10-23 (orion, and venus on DigitalOcean), so the

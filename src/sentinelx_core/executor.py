@@ -69,10 +69,17 @@ class Executor:
     # a different numbering -- a fork, a vendor build -- still gets the field as
     # long as it says it can take it.
     PROTOCOL_FEATURES = ("opaque_ref",)
+    # What an op's payload accepts, keyed by op, advertised only while that op
+    # is enabled. Not RequestMessage fields (those are PROTOCOL_FEATURES).
+    #   edit_secret: edit takes secret=true (no backup, no diff, the text kept
+    #   out of the local audit). The hub's secret link tools require it.
+    PAYLOAD_FEATURES = {"edit": ("edit_secret",)}
 
     def capability_names(self) -> list[str]:
-        """Names of supported ops plus protocol features, for `hello`."""
-        return list(self._get_handlers().keys()) + list(self.PROTOCOL_FEATURES)
+        """Names of supported ops plus protocol and payload features, for `hello`."""
+        ops = list(self._get_handlers().keys())
+        extra = [f for op in ops for f in self.PAYLOAD_FEATURES.get(op, ())]
+        return ops + list(self.PROTOCOL_FEATURES) + extra
 
     def config_summary(self) -> dict[str, int]:
         """Policy counts for the hello's ConfigSummary — aggregates only.

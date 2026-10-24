@@ -203,6 +203,7 @@ def _build_argv(
     dry_run: bool = False,
     allow_no_change: bool = False,
     create: bool = False,
+    no_backup: bool = False,
     old_file_path: Path | None = None,
     new_file_path: Path | None = None,
 ) -> list[str]:
@@ -256,6 +257,8 @@ def _build_argv(
         argv.append("--allow-no-change")
     if create:
         argv.append("--create")
+    if no_backup:
+        argv.append("--no-backup")
 
     return argv
 
@@ -350,6 +353,17 @@ def make_edit_handler(policy: Policy, upload_base: Path):
 
         _validate_mode_payload(mode, payload)
 
+        # secret=true: the hub is writing a credential the user typed into a
+        # secret link page. It must not survive anywhere but the target: no
+        # .bak copy of the old value, no diff in the output, never a created
+        # file. local_audit.record keeps the op and path but not the text.
+        secret = payload.get("secret") is True
+        if secret and (payload.get("diff") or payload.get("create") or payload.get("backup_dir")):
+            raise HandlerError(
+                "invalid_payload",
+                "secret edits take no diff, create or backup_dir",
+            )
+
         tmp_root = staging_root(upload_base)
 
         workdir = tmp_root / f"edit_job_{uuid.uuid4().hex}"
@@ -378,6 +392,7 @@ def make_edit_handler(policy: Policy, upload_base: Path):
                 dry_run=bool(payload.get("dry_run", False)),
                 allow_no_change=bool(payload.get("allow_no_change", False)),
                 create=bool(payload.get("create", False)),
+                no_backup=secret or bool(payload.get("no_backup", False)),
             )
 
             result = await _run_argv(argv)
