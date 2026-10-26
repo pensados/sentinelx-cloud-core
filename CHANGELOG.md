@@ -3,6 +3,30 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.34 - exec allowlist bypass: deny-all and concession segments - 2026-10-26
+
+An empty allowed_commands under allowlist or strict mode is deny-all, but a POSIX exec chain built only
+of exempt segments still ran: cd (any position), a SAFE_BUILTINS no-op, or a READ_ONLY_FILTERS filter
+after a separator. Three gaps let such a chain read files, and reach writes and program execution, that
+the exec allowlist is meant to bound (sxrep_CY0WMZK7W01F; private report). The relative-name gap also
+reached strict mode and, with a non-empty allowlist, dates back to 0.23.22.
+
+- handlers/exec: an empty allowed_commands now refuses every command up front in allowlist/strict mode,
+  before the segment exemptions are considered.
+- segment_check._filter_reads_a_file: a concession filter may not be handed ANY file operand, a RELATIVE
+  name (`cat passwd`, `base64 secret.key`) as well as a path-shaped one; the grep/rg PATTERN and the
+  set/string/format filters (tr, echo, printf, seq, date, true, false) are the only exceptions.
+  File-reading or program-running OPTIONS are refused too: grep -f/--file, wc/sort --files0-from,
+  date -f, rg --pre/--pre-glob/--hostname-bin. Redirection operators and here-string data are no longer
+  mistaken for file operands.
+- segment_check.unauthorised_chain: a redirection on a concession segment (cd, builtin or filter) is
+  refused in the default mode as well, so a write cannot be smuggled onto an unauthorised-but-exempt
+  command (`true > f`, `echo k >> authorized_keys`). A redirection on an allowlisted command is
+  unchanged (it is the operator's choice).
+- tests/test_exec_deny_all_bypass.py: 32 tests (the reported chains, the write/exec escalations found
+  while reproducing, strict and non-empty-allowlist variants, legitimate read-only pipelines still
+  pass). 4 sabotages caught, one per defence.
+
 ## 0.23.33 - edit takes secret=true, for the hub's secret links - 2026-10-24
 
 The hub's new secret links (hub 0.57.29) let a user type a credential into a page so it is written

@@ -148,6 +148,21 @@ def make_exec_handler(policy: Policy):
         if policy.effective_exec_mode == "unrestricted":
             return await run_shell(command, timeout=timeout)
 
+        # Deny-all is deny-all. With an empty allowed_commands under allowlist or
+        # strict mode, no exec command runs -- not even a chain built only of the
+        # segments the checks below exempt (cd, no-op builtins, read-only
+        # filters). Without this, `cd /etc && cat passwd` passed an empty
+        # allowlist because every segment was a concession (sxrep_CY0WMZK7W01F).
+        if not policy.allowed_commands:
+            raise HandlerError(
+                "command_not_allowed",
+                "allowed_commands is empty for this host, so exec is deny-all and "
+                "runs no command. Add the commands this host should permit to "
+                "allowed_commands in the config and reload the agent, or use "
+                "script_run for a one-off that leaves the policy unchanged.",
+                details={"command": command, "allowed_commands": []},
+            )
+
         # Strict mode first: the prefix check below asks what the command
         # STARTS with, which is exactly the question that let `allowed; id`
         # through. When the operator has asked for it, every segment answers

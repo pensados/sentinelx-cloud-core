@@ -50,6 +50,23 @@ READ_ONLY_FILTERS = frozenset({
     "seq", "basename", "dirname", "realpath", "readlink", "date",
 })
 
+# Filters whose operands are character sets, strings or formats -- never a file to
+# open. `tr a-z A-Z`, `echo x`, `printf %s y`, `seq 1 10`, `date -d ...` read no
+# file through an operand (date's file-reading -f is caught as an option below).
+_FILTER_OPERANDS_NOT_FILES = frozenset({
+    "tr", "echo", "printf", "true", "false", "seq", "date",
+})
+
+# Options that make an otherwise read-only filter read from, or execute, a file
+# named as the option value. Matched on the part before '=' so --file and
+# --file=F both hit. rg's preprocessor options run a program.
+_FILTER_FILE_OPTS = {
+    "grep": ("-f", "--file"), "egrep": ("-f", "--file"), "fgrep": ("-f", "--file"),
+    "rg": ("-f", "--file", "--pre", "--pre-glob", "--hostname-bin"),
+    "wc": ("--files0-from",), "sort": ("--files0-from",),
+    "date": ("-f", "--file"),
+}
+
 # Options on an otherwise read-only filter that make it write or run something.
 # If a filter segment carries one of these, it is not treated as read-only.
 _FILTER_UNSAFE_OPTS = {
@@ -76,49 +93,79 @@ _OPTS_WITH_VALUE = {
 }
 
 
+# A token that begins with a redirection operator and carries the target/data
+# attached (`>file`, `<<<data`, `2>&1`, `>>log`). Shell redirection is judged by
+# file_redirection; here such a token is simply not a file operand.
+_ATTACHED_REDIR = re.compile(r"^(?:\d*(?:>>|<<<|<<|>|<)|&>|>&|<&).")
+
+
 def _looks_like_path(tok: str) -> bool:
     """A token that would name a file to open: absolute, home, or has a slash."""
     return tok.startswith("/") or tok.startswith("~") or "/" in tok
 
 
 def _filter_reads_a_file(segment: str) -> bool:
-    """True if a (whitelisted) filter segment is handed a file path to open.
+    """True if a (whitelisted) filter segment would open, read or execute a file.
 
-    Conservative: only a path-shaped operand counts, so `head -n 5`, `cut -f1`,
-    `grep PATTERN` and `sort -k2` stay allowed, while `cat /etc/shadow`,
-    `grep x /etc/passwd` and `head ../secrets` are refused.
+    A filter after a pipe reads stdin, but handed an operand it opens that path
+    instead -- and the name may be RELATIVE (`cat passwd`, `base64 secret.key`),
+    not only path-shaped, so any bare non-option operand counts. grep/rg take a
+    PATTERN first, which is not a file. A few filters take operands that are
+    never files (character sets, strings, formats): those are listed apart. Some
+    OPTIONS read or execute a file given as their value (`grep -f FILE`,
+    `wc --files0-from=FILE`, `rg --pre=PROG`); those are refused too.
     """
     import shlex
 
+    name = first_word(segment)
     try:
         tokens = shlex.split(segment)
     except ValueError:
         return True  # unparseable: refuse rather than guess
     if not tokens:
         return False
-    name = first_word(segment)
+
+    # An option that reads from, or executes, a file named as its value.
+    for tok in tokens[1:]:
+        head = tok.split("=", 1)[0]
+        if head in _FILTER_FILE_OPTS.get(name, ()):
+            return True
+
+    # Filters whose operands are sets/strings/formats, not files to open.
+    if name in _FILTER_OPERANDS_NOT_FILES:
+        return False
+
     opts_with_value = _OPTS_WITH_VALUE.get(name, ())
-    # A sort/column carrying a write option was handled by the unsafe-opt check
-    # before this is called; here only the operands matter.
     operands = []
     expecting_value = False
+    redir_target = False
     for tok in tokens[1:]:
         if expecting_value:
             expecting_value = False
             continue
+        if redir_target:
+            redir_target = False  # the token after `< >` etc. is a target/data, not an operand
+            continue
         if tok == "--":
+            continue
+        # A redirection's target is judged by file_redirection, and a here-string's
+        # data is stdin, not a file this filter opens: neither is a file operand.
+        if tok in ("<", ">", ">>", "<<", "<<<", "2>", "&>", "<&", ">&"):
+            redir_target = True
+            continue
+        if _ATTACHED_REDIR.match(tok):  # <<<data, >file, 2>&1, >>log
             continue
         if tok.startswith("-") and tok != "-":
             if "=" not in tok and tok in opts_with_value:
                 expecting_value = True
             continue
         operands.append(tok)
-    # grep/rg/fgrep/egrep take a PATTERN operand that is not a file; it may look
-    # path-ish, so allow exactly one non-option operand for them before counting
-    # paths. Every other filter opens any operand, so any path-shaped one counts.
+    # grep/rg/fgrep/egrep take a PATTERN operand that is not a file; allow exactly
+    # one non-option operand for them. Every other filter opens any operand it is
+    # given, relative or absolute, so any remaining operand is a file read.
     if name in ("grep", "egrep", "fgrep", "rg") and operands:
         operands = operands[1:]
-    return any(_looks_like_path(o) for o in operands)
+    return len(operands) > 0
 
 
 def _filter_has_unsafe_option(segment: str) -> bool:
@@ -609,12 +656,21 @@ def unauthorised_chain(policy, command: str, _depth: int = 0) -> str | None:
             continue
         word = first_word(segment)
         if word in POSITION_FREE or word in SAFE_BUILTINS:
+            # cd and the no-op builtins execute nothing, but a redirection on
+            # them still writes or truncates a file (`true > ~/.bashrc`,
+            # `cd /tmp > out`). A redirection is the operator's business only on
+            # a command they allowlisted; on a concession segment, refuse it.
+            if file_redirection(raw) is not None:
+                return segment
             continue
         # Inside a substitution the head is in filter position too: `$(date)`
         # can't reach anything the outer command couldn't, and a file operand is
         # still refused by the read-only checks below.
         if (index > 0 or _depth > 0) and word in READ_ONLY_FILTERS:
             if _filter_reads_a_file(segment) or _filter_has_unsafe_option(segment):
+                return segment
+            # A filter may read stdin but not write a file through a redirection.
+            if file_redirection(raw) is not None:
                 return segment
             continue
         return segment
