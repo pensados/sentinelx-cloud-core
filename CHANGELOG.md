@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.35 - A refused move names the destination, not the staging file - 2026-10-29
+
+An upload to /home/alex/Downloads failed with "permission denied: '.../.sentinelx_uploads/<id>/assembled.bin'"
+(sxrep_0XCP6WETXRRH). The staging file was fine: the agent's OS user couldn't write into the destination
+directory. A refused os.replace or copy carries the source in .filename and the destination in .filename2,
+and the executor's permission_denied message used only the first.
+
+- executor: when a PermissionError has filename2, the message names the destination and its directory and
+  says the user needs write and execute permission there; details are {path: destination, source}.
+  Single-path errors are unchanged.
+- tests/test_permission_denied_destination.py: a real refused rename into a read-only directory. 1 sabotage caught.
+
 ## 0.23.34 - exec allowlist bypass: deny-all and concession segments - 2026-10-26
 
 An empty allowed_commands under allowlist or strict mode is deny-all, but a POSIX exec chain built only

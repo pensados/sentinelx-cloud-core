@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -220,7 +221,21 @@ class Executor:
             # Caught here, once, for every handler.
             duration_ms = int((time.perf_counter() - start) * 1000)
             path = exc.filename or ""
-            if path:
+            target = exc.filename2 or ""
+            if target:
+                # A rename or copy (os.replace, shutil) names the source first and
+                # the destination second. The source is the agent's own staging file;
+                # what the agent can't do is write into the destination's directory.
+                # Reporting filename alone sent people to check the staging file
+                # (sxrep_0XCP6WETXRRH: '.../assembled.bin' for a target in /home/alex).
+                folder = os.path.dirname(target) or target
+                message = (
+                    f"permission denied writing {target!r}: the agent's OS user can't "
+                    f"write into {folder!r}, even though the policy allows it. Give that "
+                    "user write and execute permission on the directory, or choose a "
+                    "destination it can write to."
+                )
+            elif path:
                 message = (
                     f"permission denied: {path!r}: the agent's OS user can't access "
                     "this path, even though the policy allows it. Check the Unix "
@@ -242,7 +257,8 @@ class Executor:
                 "error": {
                     "code": "permission_denied",
                     "message": message,
-                    "details": {"path": path} if path else {},
+                    "details": ({"path": target, "source": path} if target
+                                else {"path": path} if path else {}),
                 },
             }
 
