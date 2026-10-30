@@ -3,6 +3,25 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.36 - script_run: cancellation, bounded timeout cleanup, env with sudo, kept paths - 2026-10-31
+
+Four script_run defects reported by Jan (codeandsolder, author of a Rust reimplementation), each verified
+against 0.23.35. script_run had its own, older process handling; exec already got cancellation and a
+bounded timeout cleanup right.
+
+- Cancellation (sxrep_E7RCC1FKQC7P): a cancelled script_run kills its process tree before the
+  cancellation goes through. Before, the finally removed the workdir while the script kept running.
+- Timeout (sxrep_9GWKAWPTXZWM): after the kill, wait at most STOP_GRACE_SECONDS (5 s, as exec); if a
+  descendant that left the group still holds the pipes, close our end and report left_running.
+- env with sudo (sxrep_5CE1B15G691J): sudo resets the environment, so payload.env never reached the
+  script and the call still returned ok. The variables go into a 0600 file in the workdir that the
+  elevated sh loads before exec (never on the command line), removed after the run even with
+  cleanup=false. With sudo, env names must be shell identifiers.
+- cleanup=false and a missing interpreter (sxrep_69N1GEHNAN1K): workdir and script_path are returned on
+  a timeout and in the interpreter_missing error, which a missing interpreter now raises (it escaped as
+  a raw FileNotFoundError: the clause that named it was unreachable).
+- tests/test_script_run_lifecycle.py (7). 5 sabotages caught.
+
 ## 0.23.35 - A refused move names the destination, not the staging file - 2026-10-29
 
 An upload to /home/alex/Downloads failed with "permission denied: '.../.sentinelx_uploads/<id>/assembled.bin'"

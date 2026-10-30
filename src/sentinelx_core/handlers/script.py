@@ -46,8 +46,11 @@ from __future__ import annotations
 
 import asyncio
 
+from sentinelx_core.executor_engine import STOP_GRACE_SECONDS as _ENGINE_STOP_GRACE
 from sentinelx_core.executor_engine import communicate_partial, timeout_text
 import logging
+import re
+import shlex
 import os
 import shutil
 import signal
@@ -256,6 +259,47 @@ def _kill_process_tree(proc, *, elevated: bool = False) -> None:
         pass
 
 
+# How long to wait for the tree to go after the kill: the same grace exec uses.
+STOP_GRACE_SECONDS = _ENGINE_STOP_GRACE
+
+
+async def _stop_tree(proc, *, elevated: bool) -> bool:
+    """Kill the tree, then wait at most STOP_GRACE_SECONDS for it to go.
+
+    Returns False when something outlived the kill and still holds our pipes (a
+    descendant that left the group with setsid, or a root process the agent can't
+    signal): we close our end and return instead of waiting for it. Before 0.23.36
+    script_run waited without a limit, so a 1 s timeout came back whenever that
+    descendant exited (sxrep_9GWKAWPTXZWM).
+    """
+    _kill_process_tree(proc, elevated=elevated)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=STOP_GRACE_SECONDS)
+        return True
+    except ProcessLookupError:
+        return True
+    except (asyncio.TimeoutError, TimeoutError):
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            transport.close()
+        logger.warning(
+            "a process started by script_run outlived the kill and was left running (pid %s)", proc.pid
+        )
+        return False
+
+
+# sudo resets the environment, so payload.env never reached an elevated script
+# (sxrep_5CE1B15G691J). The names and values go into a 0600 file in the workdir
+# that the elevated sh loads before exec: never on the command line, where other
+# users could read them. The cwd travels as a positional argument, as before.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SUDO_WRAPPER = (
+    'if [ -n "$1" ]; then set -a; . "$1" || exit 126; set +a; fi; '
+    'if [ -n "$2" ]; then cd "$2" || { echo "sentinelx: cannot enter $2" >&2; exit 126; }; fi; '
+    'shift 2; exec "$@"'
+)
+
+
 def _decode_output(raw: bytes) -> str:
     """Decode a child's captured bytes to text (issue #28).
 
@@ -343,6 +387,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
 
         script_id = uuid.uuid4().hex
         workdir = tmp_root / f"script_job_{script_id}"
+        env_file: Path | None = None
         try:
             workdir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -453,18 +498,29 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             # As a positional it is also inert -- a value containing shell
             # metacharacters is just a directory name that does not exist.
             spawn_cwd = cwd
-            if use_sudo and cwd:
+            if use_sudo and env_extra:
+                bad = sorted(k for k in env_extra if not _ENV_NAME.fullmatch(k))
+                if bad:
+                    raise HandlerError(
+                        "invalid_payload",
+                        "with sudo=true, env names must be letters, digits and _ "
+                        f"(not starting with a digit): {bad}",
+                    )
+                env_file = workdir / "sentinelx_env.sh"
+                fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write("".join(f"{k}={shlex.quote(v)}\n" for k, v in env_extra.items()))
+            if use_sudo and (cwd or env_file is not None):
                 argv = [
-                    "sudo",
-                    "sh",
-                    "-c",
-                    'cd "$1" || { echo "sentinelx: cannot enter $1" >&2; exit 126; }; '
-                    'shift; exec "$@"',
-                    "sh",
-                    str(cwd),
+                    "sudo", "sh", "-c", _SUDO_WRAPPER, "sh",
+                    str(env_file) if env_file is not None else "",
+                    str(cwd) if cwd else "",
                     *argv[1:],
                 ]
                 spawn_cwd = None
+            # cleanup=false keeps the workdir: say where, on every outcome
+            # (sxrep_69N1GEHNAN1K: a timeout or a launch failure kept it silently).
+            kept = {} if cleanup else {"workdir": str(workdir), "script_path": str(script_path)}
 
             # Windows: no console window (see winspawn). POSIX: own session, so
             # the whole tree shares one process group and a timeout can reach
@@ -485,7 +541,15 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                         **extra,
                     ),
                 )
-                stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
+                try:
+                    stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
+                except asyncio.CancelledError:
+                    # The request was cancelled mid-run: stop the tree before letting
+                    # the cancellation through, as exec does. Before 0.23.36 the
+                    # finally removed the workdir while the script kept running and
+                    # its side effects still happened (sxrep_E7RCC1FKQC7P).
+                    await _stop_tree(proc, elevated=use_sudo)
+                    raise
                 if timed_out:
                     raise asyncio.TimeoutError
                 returncode = proc.returncode
@@ -517,10 +581,16 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     raise HandlerError(
                         "not_found", f"cwd {cwd!r} does not exist."
                     ) from exc
+                if isinstance(exc, FileNotFoundError):
+                    # The interpreter itself is missing. This clause used to re-raise
+                    # it raw; the `except FileNotFoundError` that named it came later
+                    # in the same try and was unreachable (sxrep_69N1GEHNAN1K).
+                    raise HandlerError(
+                        "interpreter_missing", f"interpreter not found: {exc}", kept
+                    ) from exc
                 raise
             except asyncio.TimeoutError:
-                _kill_process_tree(proc, elevated=use_sudo)
-                await proc.wait()
+                left_running = not await _stop_tree(proc, elevated=use_sudo)
                 partial = "\n".join(
                     t for t in (_decode_output(stdout_b).strip(), _decode_output(stderr_b).strip()) if t
                 )
@@ -531,17 +601,13 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     "cwd": cwd,
                     "cleanup": cleanup,
                     "command": argv,
-                    "output": timeout_text(partial),
+                    "output": timeout_text(partial, left_running),
                     "duration": round(time.time() - start, 2),
                     "returncode": -1,
                     "timed_out": True,
+                    **({"left_running": True} if left_running else {}),
+                    **kept,
                 }
-            except FileNotFoundError as exc:
-                # interpreter binary missing
-                raise HandlerError(
-                    "interpreter_missing",
-                    f"interpreter not found: {exc}",
-                ) from exc
 
             duration = round(time.time() - start, 2)
             output = (stdout + "\n" + stderr).strip() or "⚠️ Sin salida"
@@ -564,6 +630,9 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             return response
 
         finally:
+            if env_file is not None:
+                # It may hold secrets: gone even when cleanup=false keeps the rest.
+                env_file.unlink(missing_ok=True)
             if cleanup:
                 shutil.rmtree(workdir, ignore_errors=True)
 
