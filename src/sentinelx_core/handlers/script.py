@@ -47,7 +47,7 @@ from __future__ import annotations
 import asyncio
 
 from sentinelx_core.executor_engine import STOP_GRACE_SECONDS as _ENGINE_STOP_GRACE
-from sentinelx_core.executor_engine import communicate_partial, timeout_text
+from sentinelx_core.executor_engine import communicate_partial, timeout_text, wait_gone
 import logging
 import re
 import shlex
@@ -273,19 +273,15 @@ async def _stop_tree(proc, *, elevated: bool) -> bool:
     descendant exited (sxrep_9GWKAWPTXZWM).
     """
     _kill_process_tree(proc, elevated=elevated)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=STOP_GRACE_SECONDS)
+    if await wait_gone(proc, STOP_GRACE_SECONDS):
         return True
-    except ProcessLookupError:
-        return True
-    except (asyncio.TimeoutError, TimeoutError):
-        transport = getattr(proc, "_transport", None)
-        if transport is not None:
-            transport.close()
-        logger.warning(
-            "a process started by script_run outlived the kill and was left running (pid %s)", proc.pid
-        )
-        return False
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
+    logger.warning(
+        "a process started by script_run outlived the kill and was left running (pid %s)", proc.pid
+    )
+    return False
 
 
 # sudo resets the environment, so payload.env never reached an elevated script

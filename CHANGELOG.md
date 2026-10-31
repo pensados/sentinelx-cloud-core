@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.37 - left_running detection works on Python 3.14 - 2026-10-31
+
+Reported by Jan after 0.23.36 (sxrep_9GWKAWPTXZWM): the new escaped-descendant test passed on 3.12 and
+failed on 3.14.9 in CI. On 3.12 asyncio's Process.wait() also waits for the pipes to close; on 3.14 it
+returns as soon as the process exits, so a descendant that left the group (or a root process the agent
+can't signal) and still held stdout went unnoticed, in script_run and in exec alike.
+
+- executor_engine.wait_gone(): wait at most the grace for the process to exit AND both pipes to reach
+  EOF. Used by exec's _stop_process_tree and script_run's _stop_tree.
+- tests/test_wait_gone.py: exec reports left_running for an escaped descendant, and a plain timeout
+  does not. Suite passes on 3.12 and 3.14 locally; the sabotage (waiting for the process only) is
+  caught on 3.14, where the behaviour differs.
+
 ## 0.23.36 - script_run: cancellation, bounded timeout cleanup, env with sudo, kept paths - 2026-10-31
 
 Four script_run defects reported by Jan (codeandsolder, author of a Rust reimplementation), each verified

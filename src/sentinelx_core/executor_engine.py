@@ -74,25 +74,48 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
 STOP_GRACE_SECONDS = 5.0
 
 
+async def _drain(stream) -> None:
+    if stream is None:
+        return
+    while await stream.read(65536):
+        pass
+
+
+async def wait_gone(proc: asyncio.subprocess.Process, grace: float) -> bool:
+    """Wait at most `grace` for the process to exit AND its pipes to reach EOF.
+
+    On Python 3.12, Process.wait() also waits for the pipes to close; on 3.14 it
+    returns as soon as the process itself exits. A descendant that escaped the
+    group (setsid) or a root process we can't signal, still holding stdout, then
+    went unnoticed and left_running was never reported (sxrep_9GWKAWPTXZWM, seen
+    in CI on 3.14.9). Draining both pipes to EOF gives the same answer on both.
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(proc.wait(), _drain(proc.stdout), _drain(proc.stderr)), timeout=grace
+        )
+        return True
+    except ProcessLookupError:
+        return True
+    except (asyncio.TimeoutError, TimeoutError):
+        return False
+
+
 async def _stop_process_tree(proc: asyncio.subprocess.Process) -> bool:
     """Kill the tree and wait briefly for it to go. Returns False when something
     outlived the kill and still held our pipes: we close our end and return
     instead of waiting for it, and it keeps running on its own."""
     _kill_process_tree(proc)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=STOP_GRACE_SECONDS)
+    if await wait_gone(proc, STOP_GRACE_SECONDS):
         return True
-    except ProcessLookupError:
-        return True
-    except (asyncio.TimeoutError, TimeoutError):
-        transport = getattr(proc, "_transport", None)
-        if transport is not None:
-            transport.close()
-        logger.warning(
-            "a process started by a timed-out command outlived the kill and was left running (shell pid %s)",
-            proc.pid,
-        )
-        return False
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
+    logger.warning(
+        "a process started by a timed-out command outlived the kill and was left running (shell pid %s)",
+        proc.pid,
+    )
+    return False
 
 
 async def communicate_partial(
