@@ -31,10 +31,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from sentinelx_core.executor_engine import run_process
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers.fileops import _require_str, _resolve_or_reject
 from sentinelx_core.policy import Policy
-from sentinelx_core.winspawn import spawn_kwargs
 
 # --- Hard caps (server ceilings ALWAYS win over any request-provided value) --
 _MAX_FILES_CEILING = 50            # max file entries returned by diff
@@ -79,30 +79,21 @@ async def _run_git(
     apply_patch to pass the patch without a temp file).
     """
     env = {**os.environ, **_GIT_ENV}
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(root), "-c", "core.fsmonitor=false", *args,
-        **spawn_kwargs(
-            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        ),
+    # run_process kills git and anything it spawned (hooks, helpers, ssh) on
+    # timeout and on cancellation; proc.kill() reached only git itself (Jan's
+    # audit #9). Empty input when there is none: stdin closed, as DEVNULL was.
+    r = await run_process(
+        ["git", "-C", str(root), "-c", "core.fsmonitor=false", *args],
+        # Local git is fast and 15s is a generous ceiling for it. A network
+        # operation is a different animal: cloning a real repository over a
+        # slow link legitimately takes minutes, so those pass their own.
+        timeout=timeout if timeout is not None else _GIT_CMD_TIMEOUT,
+        input=stdin if stdin is not None else b"",
+        env=env,
     )
-    try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(input=stdin),
-            # Local git is fast and 15s is a generous ceiling for it. A network
-            # operation is a different animal: cloning a real repository over a
-            # slow link legitimately takes minutes, so those pass their own.
-            timeout=timeout if timeout is not None else _GIT_CMD_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+    if r.timed_out:
         raise HandlerError("git_timeout", f"git {args[0] if args else '?'} timed out")
-    return proc.returncode or 0, out, err
+    return r.returncode or 0, r.stdout, r.stderr
 
 
 # ---------------------------------------------------------------------------

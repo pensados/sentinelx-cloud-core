@@ -40,8 +40,15 @@ def _spawn_sites():
 
 
 def test_there_are_spawn_sites_to_check():
-    """Guard against the walker silently finding nothing and passing."""
-    assert len(list(_spawn_sites())) >= 5
+    """Guard against the walker silently finding nothing and passing.
+
+    0.23.46 folded exec, edit, git and the local_api relay into run_process, so
+    there are fewer sites; run_process itself must be one of them (and is held
+    to spawn_kwargs by the test below like every other).
+    """
+    sites = list(_spawn_sites())
+    assert len(sites) >= 3
+    assert any(path.name == "executor_engine.py" for path, _ in sites)
 
 
 @pytest.mark.parametrize("path,node", list(_spawn_sites()), ids=lambda x: getattr(x, "name", ""))

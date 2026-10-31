@@ -3,6 +3,21 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.46 - Edit, git and the local_api relay use run_process - 2026-10-31
+
+Stage 2 of the process-lifecycle unification (Jan's audit #8, #9, #17). None of these started their child in
+its own group or handled cancellation, and on timeout each killed only the direct child.
+
+- sentinel_edit's helper (and the validators it runs), git_ops, project_snapshot's two git calls and the
+  local_api run_as relay now run through run_process: the tree is stopped on timeout and on cancellation,
+  and an edit that times out reports left_running when something survived. git gets an empty, closed stdin
+  when it is given none, as DEVNULL did. A relay process running as another user may outlive the agent's
+  kill; that is reported, not hidden.
+- tests/test_process_contract.py covers 7 callers; git and the relay are driven through their real code
+  (a fake git on PATH, the relay command replaced). Removing run_process's cancellation cleanup fails the
+  cancel case for all 7. Tests that simulated timeouts below the new seam (patching asyncio.wait_for or
+  create_subprocess_exec) now patch run_process. Suite passes on 3.12 and 3.14.
+
 ## 0.23.45 - One process lifecycle: run_process, and a contract every caller must meet - 2026-10-31
 
 Stage 1 of unifying how the agent starts child processes (Jan's audit: every place that rolled its own

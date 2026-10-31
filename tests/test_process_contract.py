@@ -46,12 +46,82 @@ async def _via_run_shell_split(script, timeout, input=None):
             "out": r.get("stdout", "")}
 
 
+async def _via_edit_helper(script, timeout, input=None):
+    from sentinelx_core.handlers import edit as ED
+    r = await ED._run_argv(["bash", "-c", script], timeout=timeout)
+    return {"timed_out": r["returncode"] == -1 and r["output"].startswith("⏱"),
+            "left_running": r.get("left_running", False), "out": r["output"]}
+
+
+def _fake_git_on_path(tmp_path, monkeypatch, script):
+    """A `git` on PATH that runs the case's script: git_ops and project_snapshot only
+    ever run git, so this drives them through their real code."""
+    bindir = tmp_path / "fakegit"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "git").write_text('#!/bin/bash\nexec bash -c "$SX_CONTRACT_SCRIPT"\n')
+    (bindir / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("SX_CONTRACT_SCRIPT", script)
+
+
+async def _via_git_ops(script, timeout, input=None, *, tmp_path, monkeypatch):
+    from sentinelx_core.executor import HandlerError
+    from sentinelx_core.handlers import git_ops as GO
+    _fake_git_on_path(tmp_path, monkeypatch, script)
+    try:
+        rc, out, _ = await GO._run_git(tmp_path, "status", stdin=input, timeout=timeout)
+    except HandlerError as e:
+        assert e.code == "git_timeout"
+        return {"timed_out": True, "left_running": False, "out": ""}
+    return {"timed_out": False, "left_running": False, "out": out.decode()}
+
+
+async def _via_project_snapshot(script, timeout, input=None, *, tmp_path, monkeypatch):
+    from sentinelx_core.executor import HandlerError
+    from sentinelx_core.handlers import project_snapshot as PS
+    _fake_git_on_path(tmp_path, monkeypatch, script)
+    monkeypatch.setattr(PS, "_GIT_CMD_TIMEOUT", timeout)
+    try:
+        rc, out = await PS._run_git(tmp_path, "status")
+    except HandlerError as e:
+        assert e.code == "git_timeout"
+        return {"timed_out": True, "left_running": False, "out": ""}
+    return {"timed_out": False, "left_running": False, "out": out.decode()}
+
+
+async def _via_local_api_relay(script, timeout, input=None, *, tmp_path, monkeypatch):
+    import types
+    from sentinelx_core import local_api as LA
+    monkeypatch.setattr(LA, "_relay_command", lambda endpoint: ["bash", "-c", script])
+    ep = types.SimpleNamespace(timeout_s=timeout - 5, name="contract", run_as="nobody", path="/x")
+    try:
+        out = await LA._call_via_run_as(ep, input if input is not None else b"")
+    except LA.LocalApiError as e:
+        if e.code == "timeout":
+            return {"timed_out": True, "left_running": False, "out": ""}
+        raise
+    return {"timed_out": False, "left_running": False, "out": out.decode()}
+
+
+# name: (runner, takes input, reports left_running, needs tmp_path/monkeypatch)
 RUNNERS = {
-    "run_process": (_via_run_process, True),
-    "run_shell": (_via_run_shell, False),
-    "run_shell_split": (_via_run_shell_split, False),
+    "run_process": (_via_run_process, True, True, False),
+    "run_shell": (_via_run_shell, False, True, False),
+    "run_shell_split": (_via_run_shell_split, False, True, False),
+    "edit_helper": (_via_edit_helper, False, True, False),
+    "git_ops": (_via_git_ops, True, False, True),
+    "project_snapshot": (_via_project_snapshot, False, False, True),
+    "local_api_relay": (_via_local_api_relay, True, False, True),
 }
 NAMES = list(RUNNERS)
+
+
+def _runner(name, tmp_path, monkeypatch):
+    fn, _, _, needs = RUNNERS[name]
+    if needs:
+        return lambda script, timeout, input=None: fn(script, timeout, input,
+                                                      tmp_path=tmp_path, monkeypatch=monkeypatch)
+    return fn
 
 
 @pytest.fixture(autouse=True)
@@ -67,8 +137,8 @@ def _killpg_from(pidfile):
 
 
 @pytest.mark.parametrize("name", NAMES)
-async def test_cancelling_kills_the_whole_tree(name, tmp_path):
-    runner, _ = RUNNERS[name]
+async def test_cancelling_kills_the_whole_tree(name, tmp_path, monkeypatch):
+    runner = _runner(name, tmp_path, monkeypatch)
     marker = tmp_path / "marker"
     task = asyncio.create_task(runner(f"(sleep 2; printf x > {marker}) & sleep 30", 20))
     await asyncio.sleep(0.4)
@@ -80,8 +150,8 @@ async def test_cancelling_kills_the_whole_tree(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", NAMES)
-async def test_a_timeout_kills_the_tree_and_returns_in_time(name, tmp_path):
-    runner, _ = RUNNERS[name]
+async def test_a_timeout_kills_the_tree_and_returns_in_time(name, tmp_path, monkeypatch):
+    runner = _runner(name, tmp_path, monkeypatch)
     marker = tmp_path / "marker"
     t0 = time.monotonic()
     res = await runner(f"(sleep 2; printf x > {marker}) & sleep 30", 1)
@@ -91,8 +161,8 @@ async def test_a_timeout_kills_the_tree_and_returns_in_time(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", NAMES)
-async def test_a_setsid_descendant_is_killed_too(name, tmp_path):
-    runner, _ = RUNNERS[name]
+async def test_a_setsid_descendant_is_killed_too(name, tmp_path, monkeypatch):
+    runner = _runner(name, tmp_path, monkeypatch)
     marker = tmp_path / "marker"
     res = await runner(f"setsid sh -c 'sleep 2; printf x > {marker}' & sleep 30", 1)
     assert res["timed_out"] and not res["left_running"], (name, res)
@@ -100,9 +170,9 @@ async def test_a_setsid_descendant_is_killed_too(name, tmp_path):
     assert not marker.exists(), f"{name}: an escaped descendant kept running"
 
 
-@pytest.mark.parametrize("name", NAMES)
-async def test_an_orphan_holding_the_pipes_is_reported(name, tmp_path):
-    runner, _ = RUNNERS[name]
+@pytest.mark.parametrize("name", [n for n in NAMES if RUNNERS[n][2]])
+async def test_an_orphan_holding_the_pipes_is_reported(name, tmp_path, monkeypatch):
+    runner = _runner(name, tmp_path, monkeypatch)
     pidfile = tmp_path / "pid"
     try:
         res = await runner(f"(setsid sh -c 'echo $$ > {pidfile}; sleep 8' &); sleep 30", 1)
@@ -112,7 +182,7 @@ async def test_an_orphan_holding_the_pipes_is_reported(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", [n for n in NAMES if RUNNERS[n][1]])
-async def test_input_reaches_stdin(name):
-    runner, _ = RUNNERS[name]
+async def test_input_reaches_stdin(name, tmp_path, monkeypatch):
+    runner = _runner(name, tmp_path, monkeypatch)
     res = await runner("cat", 5, input=b"through stdin")
     assert res["out"] == "through stdin" and not res["timed_out"]

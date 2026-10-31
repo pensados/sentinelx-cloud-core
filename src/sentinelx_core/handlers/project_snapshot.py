@@ -22,10 +22,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from sentinelx_core.executor_engine import run_process
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers.fileops import _require_str, _resolve_or_reject
 from sentinelx_core.policy import Policy
-from sentinelx_core.winspawn import spawn_kwargs
 
 # Hard caps (always win over any request-provided value).
 _MAX_CHANGED_FILES = 50
@@ -64,46 +64,26 @@ async def _git_toplevel(root: Path) -> tuple[int, bytes, bytes]:
     snapshot silently downgrades a real repository to kind=directory.
     """
     env = {**os.environ, **_GIT_ENV}
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(root), "-c", "core.fsmonitor=false",
-        "rev-parse", "--show-toplevel",
-        **spawn_kwargs(
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        ),
+    r = await run_process(
+        ["git", "-C", str(root), "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"],
+        timeout=_GIT_CMD_TIMEOUT, input=b"", env=env,
     )
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=_GIT_CMD_TIMEOUT)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+    if r.timed_out:
         return 1, b"", b""
-    return proc.returncode or 0, out, err
+    return r.returncode or 0, r.stdout, r.stderr
 
 
 async def _run_git(root: Path, *args: str) -> tuple[int, bytes]:
     """Run a fixed git argv under `root`. Returns (returncode, stdout). Never shell."""
     env = {**os.environ, **_GIT_ENV}
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(root), "-c", "core.fsmonitor=false", *args,
-        **spawn_kwargs(
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env,
-        ),
+    # Same lifecycle as git_ops._run_git: run_process (Jan's audit #9).
+    r = await run_process(
+        ["git", "-C", str(root), "-c", "core.fsmonitor=false", *args],
+        timeout=_GIT_CMD_TIMEOUT, input=b"", env=env,
     )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_CMD_TIMEOUT)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+    if r.timed_out:
         raise HandlerError("git_timeout", f"git {args[0]} timed out")
-    return proc.returncode or 0, out
+    return r.returncode or 0, r.stdout
 
 
 def _top_and_extensions(rel_paths: list[str]) -> tuple[list[str], dict[str, int], bool]:

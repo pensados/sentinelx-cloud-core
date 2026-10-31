@@ -155,18 +155,14 @@ async def test_a_timed_out_clone_leaves_nothing_behind(workspace, monkeypatch) -
     tmp, h, origin = workspace
     dest = tmp / "slow"
 
-    async def _never(*a, **k):
-        import asyncio
-        await asyncio.sleep(10)
+    # Since 0.23.46 git runs through run_process: simulate the timeout there
+    # (patching asyncio.wait_for also hit run_process's own use of it).
+    async def _timed_out(argv, **kw):
+        from sentinelx_core.executor_engine import ProcResult
+        return ProcResult(-1, b"", b"", timed_out=True)
 
     monkeypatch.setattr(git_ops, "_NET_TIMEOUT", 1)
-    monkeypatch.setattr(git_ops.asyncio, "wait_for",
-                        lambda coro, timeout: _raise_timeout(coro))
-
-    async def _raise_timeout(coro):
-        coro.close()
-        import asyncio
-        raise asyncio.TimeoutError
+    monkeypatch.setattr(git_ops, "run_process", _timed_out)
 
     with pytest.raises(HandlerError) as exc:
         await h({"operation": "clone", "url": str(origin), "dest": str(dest)})
@@ -176,14 +172,13 @@ async def test_a_timed_out_clone_leaves_nothing_behind(workspace, monkeypatch) -
 
 @pytest.fixture
 def always_times_out(monkeypatch):
+    from sentinelx_core.executor_engine import ProcResult
     from sentinelx_core.handlers import git_ops
 
-    async def _raise_timeout(coro, timeout=None):
-        coro.close()
-        import asyncio
-        raise asyncio.TimeoutError
+    async def _timed_out(argv, **kw):
+        return ProcResult(-1, b"", b"", timed_out=True)
 
-    monkeypatch.setattr(git_ops.asyncio, "wait_for", _raise_timeout)
+    monkeypatch.setattr(git_ops, "run_process", _timed_out)
 
 
 async def test_the_first_suggestion_is_depth(workspace, always_times_out) -> None:

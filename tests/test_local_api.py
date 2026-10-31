@@ -354,22 +354,14 @@ def test_the_relay_command_becomes_that_user_and_nothing_else() -> None:
 async def test_a_refused_sudo_names_the_sudoers_line(monkeypatch) -> None:
     # The operator's next action is a specific sudoers rule, so the error says
     # which one rather than reporting a generic permission failure.
-    import asyncio as _asyncio
-
+    from sentinelx_core import local_api as _la
+    from sentinelx_core.executor_engine import ProcResult
     from sentinelx_core.local_api import LocalApiError, _call_via_run_as
 
-    class _Proc:
-        returncode = 1
+    async def fake(argv, **kw):
+        return ProcResult(1, b"", b"sudo: a password is required")
 
-        async def communicate(self, data=None):
-            return b"", b"sudo: a password is required"
-
-        def kill(self): ...
-
-    async def fake(*a, **k):
-        return _Proc()
-
-    monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake)
+    monkeypatch.setattr(_la, "run_process", fake)
     with pytest.raises(LocalApiError) as exc:
         await _call_via_run_as(_endpoint_with_run_as(), b"{}\n")
     assert exc.value.code == "run_as_not_permitted"

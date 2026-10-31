@@ -33,6 +33,7 @@ import os
 import sys
 from uuid import uuid4
 from typing import Any
+from sentinelx_core.executor_engine import run_process
 from sentinelx_core.winspawn import spawn_kwargs
 
 logger = logging.getLogger(__name__)
@@ -231,32 +232,23 @@ def _relay_command(endpoint: Any) -> list[str]:
 
 async def _call_via_run_as(endpoint: Any, payload: bytes) -> bytes:
     """Send one request through the relay, under the declared Unix identity."""
-    proc = await asyncio.create_subprocess_exec(
-        *_relay_command(endpoint),
-        **spawn_kwargs(
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        ),
-    )
-    try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(payload), timeout=endpoint.timeout_s + 5
-        )
-    except (TimeoutError, asyncio.TimeoutError) as exc:
-        proc.kill()
-        raise LocalApiError(
-            "timeout", f"{endpoint.name} did not answer in time"
-        ) from exc
+    # run_process: the relay tree is stopped on timeout and on cancellation (Jan's
+    # audit #17: only the direct child was killed, and only on timeout). What runs
+    # as endpoint.run_as can outlive it if the agent may not signal that user;
+    # run_process reports that as left_running instead of hiding it.
+    r = await run_process(_relay_command(endpoint), timeout=endpoint.timeout_s + 5, input=payload)
+    if r.timed_out:
+        raise LocalApiError("timeout", f"{endpoint.name} did not answer in time")
+    out, err = r.stdout, r.stderr
 
-    if proc.returncode == 0 and out:
+    if r.returncode == 0 and out:
         return out
 
     detail = (err or b"").decode("utf-8", "replace").strip()
     # sudo's own refusal is the common case and deserves a real answer rather
     # than the raw message, because the fix is a specific sudoers line.
     if "a password is required" in detail or "not allowed to execute" in detail or (
-        proc.returncode == 1 and "sudo" in detail
+        r.returncode == 1 and "sudo" in detail
     ):
         raise LocalApiError(
             "run_as_not_permitted",
@@ -267,13 +259,13 @@ async def _call_via_run_as(endpoint: Any, payload: bytes) -> bytes:
             f"{sys.executable} -m sentinelx_core.local_api_relay\n"
             f"Until then this endpoint is unreachable. ({detail[:120]})",
         )
-    if proc.returncode == 3:
+    if r.returncode == 3:
         raise LocalApiError(
             "endpoint_unreachable",
             f"cannot open {endpoint.path} as {endpoint.run_as}: {detail[:160]}",
         )
     raise LocalApiError(
-        "bad_response", f"relay failed (rc={proc.returncode}): {detail[:160]}"
+        "bad_response", f"relay failed (rc={r.returncode}): {detail[:160]}"
     )
 
 

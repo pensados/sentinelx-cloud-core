@@ -40,7 +40,6 @@ Modes:
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import sys
 import time
@@ -48,10 +47,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sentinelx_core.executor_engine import run_process, timeout_text
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
 from sentinelx_core.staging import staging_root
-from sentinelx_core.winspawn import spawn_kwargs
 
 VALID_MODES = ("replace", "regex", "replace-block", "append", "prepend", "write")
 VALID_PRESETS = ("nginx", "json", "python", "sh", "yaml", "systemd", "toml")
@@ -264,24 +263,20 @@ def _build_argv(
 
 async def _run_argv(argv: list[str], timeout: int = 60) -> dict[str, Any]:
     """Run the assembled argv directly (no shell). Returns legacy-shape dict."""
+    # run_process owns the lifecycle: the helper and its validators are killed as a
+    # tree on timeout and on cancellation. Before, a timeout killed only the helper
+    # and a cancelled edit could still commit (Jan's audit #8).
     start = time.time()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            **spawn_kwargs(
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            ),
-        )
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return {
-            "output": "⏱️ Timeout",
-            "duration": round(time.time() - start, 2),
-            "returncode": -1,
-        }
+        r = await run_process(argv, timeout=timeout)
+        if r.timed_out:
+            return {
+                "output": timeout_text("", r.left_running),
+                "duration": round(time.time() - start, 2),
+                "returncode": -1,
+                **({"left_running": True} if r.left_running else {}),
+            }
+        stdout_b, stderr_b = r.stdout, r.stderr
     except FileNotFoundError as exc:
         raise HandlerError(
             "binary_missing",
@@ -292,7 +287,7 @@ async def _run_argv(argv: list[str], timeout: int = 60) -> dict[str, Any]:
     stdout = (stdout_b.decode(errors="replace") or "").strip()
     stderr = (stderr_b.decode(errors="replace") or "").strip()
     output = (stdout + "\n" + stderr).strip() or "⚠️ Sin salida"
-    return {"output": output, "duration": duration, "returncode": proc.returncode}
+    return {"output": output, "duration": duration, "returncode": r.returncode}
 
 
 def make_edit_handler(policy: Policy, upload_base: Path):
