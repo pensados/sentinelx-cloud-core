@@ -46,7 +46,9 @@ def _tree_command(pidfile) -> str:
 @pytest.mark.parametrize("runner", [run_shell, run_shell_split])
 async def test_exec_timeout_kills_the_whole_shell_process_group(tmp_path, runner):
     pidfile = tmp_path / "pgid"
-    result = await runner(_tree_command(pidfile), timeout=0.25)
+    # 2 s, not 0.25: on a slow CI runner the shell sometimes hadn't written the
+    # pidfile before the timeout, and reading it failed (CI 2026-10-26, -29).
+    result = await runner(_tree_command(pidfile), timeout=2)
 
     assert result.get("returncode") == -1
     pgid = int(pidfile.read_text())
