@@ -7,7 +7,9 @@ on:
 
 jobs:
   macos-agent:
-    runs-on: macos-14          # real Apple Silicon (M1)
+    # macos-14 is retired on 2026-11-02; its jobs were already being cancelled before
+    # running. A pinned label, not macos-latest, so the macOS version only changes on purpose.
+    runs-on: macos-15          # Apple Silicon
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
