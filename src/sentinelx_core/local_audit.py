@@ -98,9 +98,11 @@ SKIP_OPS = frozenset({"read_audit", "ping"})
 # Fields that carry file bytes rather than a description of what was done.
 _BINARY_FIELDS = frozenset({"content_base64"})
 MAX_FIELD_CHARS = 65536
-# Whole-entry cap. Per-field compaction let thousands of small strings through: a
-# 918 KB line from one valid local_api request, ~4.3 GiB at MAX_LINES (sxrep_YC39MPSTA6S2).
-MAX_ENTRY_CHARS = 64 * 1024
+# Whole-entry cap, in UTF-8 bytes as written. Per-field compaction let thousands of
+# small strings through: a 918 KB line, ~4.3 GiB at MAX_LINES (sxrep_YC39MPSTA6S2).
+# 0.23.40 counted characters, and 61 K emoji characters are 241 KB on disk.
+MAX_ENTRY_BYTES = 64 * 1024
+MAX_ENTRY_CHARS = MAX_ENTRY_BYTES   # old name
 _HEAD_CHARS = 2048
 
 
@@ -193,9 +195,12 @@ def record(op: str, payload: dict[str, Any], ok: bool,
         if result_returncode is not None:
             entry["result_returncode"] = int(result_returncode)
         line = json.dumps(entry, ensure_ascii=False, default=str)
-        if len(line) > MAX_ENTRY_CHARS:
+        if len(line.encode("utf-8", "replace")) > MAX_ENTRY_BYTES:
             entry["payload"] = _payload_summary(entry["payload"])
             line = json.dumps(entry, ensure_ascii=False, default=str)
+            if len(line.encode("utf-8", "replace")) > MAX_ENTRY_BYTES:
+                entry["payload"] = {k: entry["payload"][k] for k in ("_summarized", "chars", "sha256")}
+                line = json.dumps(entry, ensure_ascii=False, default=str)
 
         AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
         with AUDIT_PATH.open("a", encoding="utf-8") as f:

@@ -60,22 +60,34 @@ def descendants(pid: int) -> list[int]:
     return out
 
 
-def kill_pids(pids: list[int], *, elevated: bool = False) -> None:
-    """SIGKILL each pid; through sudo when they may be root-owned. Best effort."""
+def kill_pids(pids: list[int], *, elevated: bool = False) -> bool:
+    """SIGKILL each pid; through sudo when they may be root-owned. Best effort.
+
+    Returns False when some pid could not be signalled. A failed sudo kill falls
+    back to signalling each pid directly instead of being taken as success
+    (sxrep_AZ931A9557MC, follow-up on 0.23.40).
+    """
     if not pids:
-        return
+        return True
     if elevated:
         try:
-            subprocess.run(["sudo", "-n", "kill", "-9", "--", *map(str, pids)],
-                           capture_output=True, timeout=10)
+            done = subprocess.run(["sudo", "-n", "kill", "-9", "--", *map(str, pids)],
+                                  capture_output=True, timeout=10)
+            if done.returncode == 0:
+                return True
+            logger.warning("sudo kill of escaped descendants exited %s; trying them one by one",
+                           done.returncode)
         except Exception:  # noqa: BLE001
             logger.warning("sudo kill of escaped descendants failed", exc_info=True)
-        return
+    ok = True
     for p in pids:
         try:
             os.kill(p, signal.SIGKILL)
-        except OSError:
+        except ProcessLookupError:
             pass
+        except OSError:
+            ok = False
+    return ok
 
 
 async def finish_cleanup(coro) -> None:

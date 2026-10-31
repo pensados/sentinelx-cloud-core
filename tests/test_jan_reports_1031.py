@@ -37,33 +37,8 @@ def _secret_in_place(tmp_path, monkeypatch):
     return target, tdir
 
 
-@posix
-def test_a_failed_in_place_secret_write_puts_the_original_back(tmp_path, monkeypatch):
-    target, tdir = _secret_in_place(tmp_path, monkeypatch)
-    real = pse._write_over
-    calls = []
-
-    def failing_once(dst, src):
-        calls.append(src)
-        if len(calls) == 1:
-            with open(dst, "r+b") as f:
-                f.write(b"BBBB")          # Jan's repro: an I/O error after four bytes
-            raise OSError(5, "synthetic write failure")
-        return real(dst, src)
-
-    monkeypatch.setattr(pse, "_write_over", failing_once)
-    with pytest.raises(Exception):
-        pse.apply_edit(pse.EditSpec(path=str(target), mode="write", new="B" * 16 + "\n", no_backup=True))
-    assert target.read_text() == "A" * 16 + "\n", "the credential was left half-written"
-    assert not list(tdir.iterdir()), "the recovery copy was left behind"
-
-
-@posix
-def test_a_successful_in_place_secret_write_leaves_no_copy(tmp_path, monkeypatch):
-    target, tdir = _secret_in_place(tmp_path, monkeypatch)
-    pse.apply_edit(pse.EditSpec(path=str(target), mode="write", new="B" * 16 + "\n", no_backup=True))
-    assert target.read_text() == "B" * 16 + "\n"
-    assert not list(tdir.iterdir())
+# The two 0.23.40 recovery-copy tests were replaced in 0.23.42: secret edits that
+# can't keep the owner are now refused (see test_jan_followups_1031b.py).
 
 
 def test_an_audit_entry_is_capped_whatever_its_shape(tmp_path, monkeypatch):

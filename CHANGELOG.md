@@ -3,6 +3,23 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.42 - Follow-ups: secret edits refused without a backup, raw failures keep paths, kill_pids, byte cap - 2026-10-31
+
+Jan's follow-ups on tonight's fixes.
+
+- secret edits (sxrep_YW9E73QKVSQC): 0.23.40's recovery copy could outlive a crash in the temp dir.
+  When the owner can't be preserved and there is no backup, the edit is now refused before anything is
+  touched (run with sudo=true, or let the agent own the file). No in-place write, no copy.
+- script_run (sxrep_69N1GEHNAN1K): env names with '=' or NUL, empty names and NUL in values are refused
+  before staging; with cleanup=false, any failure after staging (not only HandlerError) carries workdir
+  and script_path, with the code it would have had.
+- kill_pids (sxrep_AZ931A9557MC): a failed sudo kill of escaped descendants falls back to each pid and
+  reports whether all were signalled.
+- local audit (sxrep_YC39MPSTA6S2): the whole-entry cap is in UTF-8 bytes as written (MAX_ENTRY_BYTES),
+  with a smaller summary if even the summary is too big.
+- tests/test_jan_followups_1031b.py; the two 0.23.40 recovery-copy tests replaced. 5 sabotages caught.
+  Suite passes on 3.12 and 3.14.
+
 ## 0.23.41 - SECURITY: allowlist mode makes the variables that decide what runs read-only - 2026-10-31
 
 After 0.23.39, Jan reached PATH through printf -v (sxrep_NBEA83P4PV36), a mechanism the chain check

@@ -408,6 +408,15 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             for k, v in env_extra.items()
         ):
             raise HandlerError("invalid_payload", "'env' must be dict[str, str]")
+        # Names and values the OS refuses: they failed only at spawn time, after the
+        # workdir existed (sxrep_69N1GEHNAN1K follow-up). Refused before staging.
+        for k, v in env_extra.items():
+            if not k or "=" in k or "\0" in k or "\0" in v:
+                raise HandlerError(
+                    "invalid_payload",
+                    f"env name {k!r} or its value can't be passed to a process: names "
+                    "can't be empty or contain '=' or NUL, values can't contain NUL",
+                )
         if sudo and sys.platform != "win32" and env_extra:
             # Checked before anything is staged: after staging, cleanup=false left an
             # undiscoverable workdir behind this error (sxrep_69N1GEHNAN1K).
@@ -669,6 +678,18 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                 exc.details = {"workdir": str(workdir), "script_path": str(script_path),
                                **(exc.details or {})}
             raise
+        except Exception as exc:  # noqa: BLE001
+            # Any other failure after staging (a full disk, an OS refusal at spawn) used
+            # to escape without saying where the kept workdir is (sxrep_69N1GEHNAN1K).
+            # Same code it would have had; cancellation is a BaseException, not caught.
+            if cleanup:
+                raise
+            kept_paths = {"workdir": str(workdir), "script_path": str(script_path)}
+            if isinstance(exc, PermissionError):
+                where = exc.filename2 or exc.filename
+                raise HandlerError("permission_denied", str(exc),
+                                   {**kept_paths, **({"path": str(where)} if where else {})}) from exc
+            raise HandlerError("internal_error", f"{type(exc).__name__}: {exc}", kept_paths) from exc
         finally:
             _remove_env_file(env_file, workdir)
             if cleanup:
