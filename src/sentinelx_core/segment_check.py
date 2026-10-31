@@ -409,6 +409,7 @@ class UnparseableCommand(ValueError):
 _SUB_MARK = "__SX_SUBST__"
 _MAX_NESTING = 8
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _HEREDOC_OP = re.compile(
     r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\?[^\s;&|<>()'\"]+))"
 )
@@ -631,6 +632,62 @@ def _command_part(segment: str) -> str | None:
     return rest or None
 
 
+# Names a chain may assign in allowlist mode (0.23.39, sxrep_NBEA83P4PV36). An
+# assignment, a for/select variable or a `read` target can change WHICH program a
+# later allowed command runs or what it loads: `PATH=/evil:$PATH; ls`, `for PATH in
+# /evil; do ls; done`, `HOME=/evil; git status` (git reads /evil/.gitconfig),
+# `PS4='$(cmd)'; set -x; ls`. Every variable the shell or a program uses that way
+# is upper case by convention (PATH, HOME, LD_*, PS4, IFS, BASH_ENV, PAGER, GIT_*),
+# while chains name their own variables in lower case (`for f in *.log`, `while read
+# -r line`). The exported lower-case exceptions are the proxy variables.
+_EXPORTED_LOWERCASE = frozenset({
+    "http_proxy", "https_proxy", "ftp_proxy", "ftps_proxy", "all_proxy", "no_proxy",
+    "rsync_proxy", "socks_proxy", "socks5_proxy",
+})
+_READ_OPTS_WITH_VALUE = frozenset({"-d", "-n", "-N", "-p", "-t", "-u", "-i"})
+
+
+def safe_to_assign(name: str) -> bool:
+    return name == name.lower() and name not in _EXPORTED_LOWERCASE
+
+
+def _after_leading_keywords(segment: str) -> str:
+    rest = segment.lstrip()
+    while True:
+        rest = rest.lstrip("(").lstrip()
+        word = first_word(rest)
+        if word in _LEADING_KEYWORDS:
+            rest = rest[len(word):].lstrip()
+            continue
+        return rest
+
+
+def _assigned_names(segment: str) -> list[str]:
+    """Variables this segment sets: plain assignments, a for/select variable, read targets."""
+    toks = _after_leading_keywords(segment).split()
+    if not toks:
+        return []
+    if toks[0] in _HEADER_KEYWORDS:
+        return [toks[1]] if len(toks) > 1 and _NAME.fullmatch(toks[1]) else []
+    if toks[0] == "read":
+        names, i = [], 1
+        while i < len(toks):
+            t = toks[i]
+            if t == "-a" and i + 1 < len(toks):
+                names.append(toks[i + 1]); i += 2; continue
+            if t in _READ_OPTS_WITH_VALUE:
+                i += 2; continue
+            if t.startswith("-"):
+                i += 1; continue
+            if _NAME.fullmatch(t):
+                names.append(t)
+            i += 1
+        return names
+    if all(_ASSIGNMENT.match(t) for t in toks):
+        return [t.split("=", 1)[0] for t in toks]
+    return []
+
+
 def _only_assignments(segment: str) -> bool:
     toks = segment.split()
     return bool(toks) and all(_ASSIGNMENT.match(t) for t in toks)
@@ -651,6 +708,8 @@ def unauthorised_chain(policy, command: str, _depth: int = 0) -> str | None:
     for body in live_bodies:
         bodies.extend(mask_substitutions(body, literal_quotes=True)[1])
     for index, raw in enumerate(split_top_level(masked)):
+        if any(not safe_to_assign(n) for n in _assigned_names(raw)):
+            return raw.strip()
         segment = _command_part(raw)
         if segment is None or _only_assignments(segment) or policy.is_command_allowed(segment):
             continue

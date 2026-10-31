@@ -3,6 +3,20 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.39 - SECURITY: allowlist chains can't assign variables that steer programs - 2026-10-31
+
+Reported by Jan (sxrep_NBEA83P4PV36): in allowlist mode, with only `ls` allowed, `PATH=<dir>:$PATH; ls`
+and `for PATH in <dir>; do ls; done` ran an attacker's `ls`. Assignment-only segments and for/select
+headers were exempt, and `read` is a safe builtin (`while read -r PATH; do ls; done` passed too). The
+same class reached through HOME (git reads ~/.gitconfig: core.pager, core.sshCommand) and PS4 with set -x.
+
+- segment_check: plain assignments, for/select variables and read targets must be lower-case names
+  that are not proxy variables. Variables that steer programs are upper case by convention (PATH, HOME,
+  LD_*, PS4, IFS, BASH_ENV, PAGER, GIT_*); a chain's own variables are lower case. export, declare,
+  PATH+=, array elements, VAR=x cmd prefixes and here-strings were already refused.
+- tests/test_exec_chain_assignments.py: every vector above, ordinary loops and reads still pass, and
+  Jan's two repros run the fake ls in bash and are refused by the gate. 4 sabotages caught. 3.12, 3.14.
+
 ## 0.23.38 - Escaped descendants, uninterruptible cleanup, safe env-file cleanup - 2026-10-31
 
 Jan's follow-ups on 0.23.36, each reproduced on 3.11-3.14.
