@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from sentinelx_core import local_audit
+from sentinelx_core import executor_engine as EE
 from sentinelx_core.handlers import script as S
 from sentinelx_core.huburl import hub_bases
 from sentinelx_core.preflight import _ws_url
@@ -69,7 +70,7 @@ def _failing_run(*a, **k):
 def test_a_failed_sudo_kill_falls_back_to_kill(monkeypatch):
     sleeper = subprocess.Popen(["sleep", "30"], start_new_session=True)
     try:
-        monkeypatch.setattr(S.subprocess, "run", _failing_run)
+        monkeypatch.setattr(EE.subprocess, "run", _failing_run)
         proc = _Proc(sleeper.pid)
         S._kill_process_tree(proc, elevated=True)
         assert proc.killed, "a failed sudo kill returned as if it had worked"
@@ -79,7 +80,7 @@ def test_a_failed_sudo_kill_falls_back_to_kill(monkeypatch):
 
 
 def test_a_failed_taskkill_falls_back_to_kill(monkeypatch):
-    monkeypatch.setattr(S.subprocess, "run", _failing_run)
+    monkeypatch.setattr(EE.subprocess, "run", _failing_run)
     monkeypatch.setattr(S.sys, "platform", "win32")
     proc = _Proc(999999)
     S._kill_process_tree(proc)

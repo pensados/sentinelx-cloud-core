@@ -46,17 +46,13 @@ from __future__ import annotations
 
 import asyncio
 
-from sentinelx_core.winspawn import spawn_kwargs
-from sentinelx_core.executor_engine import STOP_GRACE_SECONDS as _ENGINE_STOP_GRACE
-from sentinelx_core.executor_engine import communicate_partial, timeout_text, wait_gone
-from sentinelx_core.executor_engine import descendants, finish_cleanup, kill_pids
+from sentinelx_core.executor_engine import _kill_process_tree, run_process  # noqa: F401 (re-exported for tests)
+from sentinelx_core.executor_engine import timeout_text
 import logging
 import re
 import shlex
 import os
 import shutil
-import signal
-import subprocess
 import sys
 import time
 import uuid
@@ -195,105 +191,6 @@ def _windows_legacy_encoding() -> str | None:
         return locale.getpreferredencoding(False) or None
     except Exception:
         return None
-
-
-def _kill_process_tree(proc, *, elevated: bool = False) -> None:
-    """Kill a timed-out child and everything it started.
-
-    Killing only the process we spawned leaves its descendants running. On
-    Windows that was already handled; on POSIX it was not, and a timed-out
-    `docker run` left the docker client and its root-owned wrapper alive for
-    hours -- reported after repeated attempts each leaked another pair.
-
-    On POSIX the child is started in its own session (start_new_session), so
-    the whole tree shares one process group and a single signal reaches all of
-    it. Two details decided by experiment rather than assumption:
-
-    - A tree started with sudo is root-owned, and the agent user cannot signal
-      it: killpg raises PermissionError and the processes survive. Those need
-      `sudo kill`.
-    - `kill -9 -<pgid>` is read as an option, not a group. It returns success
-      and kills nothing, which is the worst way to fail. The `--` separator is
-      what makes it a process group.
-
-    A descendant that called setsid is out of the group: it is killed from a /proc
-    snapshot of the tree taken before the group dies (sxrep_E7RCC1FKQC7P).
-    """
-    kill_pids(descendants(proc.pid), elevated=elevated)
-    if sys.platform == "win32":
-        try:
-            done = subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output=True,
-                timeout=10,
-            )
-            if done.returncode == 0:
-                return
-            # A failed taskkill must fall through to proc.kill(), as exec's does
-            # (sxrep_AZ931A9557MC: it returned as if it had worked).
-            logger.warning("taskkill exited %s; falling back to kill()", done.returncode)
-        except Exception:
-            logger.warning("taskkill failed; falling back to kill()", exc_info=True)
-    # POSIX: signal the whole group.
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        pgid = None
-
-    if pgid is not None:
-        if elevated:
-            # Root-owned tree: we have no permission of our own.
-            try:
-                done = subprocess.run(
-                    ["sudo", "-n", "kill", "-9", "--", f"-{pgid}"],
-                    capture_output=True,
-                    timeout=10,
-                )
-                if done.returncode == 0:
-                    return
-                logger.warning("sudo kill of process group %s exited %s; falling back to kill()",
-                               pgid, done.returncode)
-            except Exception:
-                logger.warning("sudo kill of process group failed", exc_info=True)
-        else:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-                return
-            except ProcessLookupError:
-                return
-            except PermissionError:
-                logger.warning("no permission to kill process group %s", pgid)
-
-    # Last resort: at least the process we spawned (a root-owned one may refuse).
-    try:
-        proc.kill()
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
-# How long to wait for the tree to go after the kill: the same grace exec uses.
-STOP_GRACE_SECONDS = _ENGINE_STOP_GRACE
-
-
-async def _stop_tree(proc, *, elevated: bool) -> bool:
-    """Kill the tree, then wait at most STOP_GRACE_SECONDS for it to go.
-
-    Returns False when something outlived the kill and still holds our pipes (a
-    descendant that left the group with setsid, or a root process the agent can't
-    signal): we close our end and return instead of waiting for it. Before 0.23.36
-    script_run waited without a limit, so a 1 s timeout came back whenever that
-    descendant exited (sxrep_9GWKAWPTXZWM).
-    """
-    _kill_process_tree(proc, elevated=elevated)
-    if await wait_gone(proc, STOP_GRACE_SECONDS):
-        return True
-    transport = getattr(proc, "_transport", None)
-    if transport is not None:
-        transport.close()
-    logger.warning(
-        "a process started by script_run outlived the kill and was left running (pid %s)", proc.pid
-    )
-    return False
 
 
 # sudo resets the environment, so payload.env never reached an elevated script
@@ -565,37 +462,17 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             # (sxrep_69N1GEHNAN1K: a timeout or a launch failure kept it silently).
             kept = {} if cleanup else {"workdir": str(workdir), "script_path": str(script_path)}
 
-            # Windows: no console window (see winspawn). POSIX: own session, so
-            # the whole tree shares one process group and a timeout can reach
-            # every descendant with a single signal.
-            extra: dict[str, Any] = {}
-            if sys.platform != "win32":
-                extra["start_new_session"] = True
-
             start = time.time()
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs(
-                        cwd=spawn_cwd,
-                        env=full_env,
-                        **extra,
-                    ),
-                )
-                try:
-                    stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
-                except asyncio.CancelledError:
-                    # The request was cancelled mid-run: stop the tree before letting
-                    # the cancellation through, as exec does. Before 0.23.36 the
-                    # finally removed the workdir while the script kept running and
-                    # its side effects still happened (sxrep_E7RCC1FKQC7P).
-                    await finish_cleanup(_stop_tree(proc, elevated=use_sudo))
-                    raise
-                if timed_out:
+                # run_process owns the lifecycle: own session, the tree killed on
+                # timeout and on cancellation (sudo kill for an elevated tree), the
+                # partial output kept. script_run had its own copy until 0.23.47.
+                r = await run_process(argv, timeout=timeout, cwd=spawn_cwd, env=full_env,
+                                      elevated=use_sudo)
+                stdout_b, stderr_b = r.stdout, r.stderr
+                if r.timed_out:
                     raise asyncio.TimeoutError
-                returncode = proc.returncode
+                returncode = r.returncode
                 stdout = _decode_output(stdout_b).strip()
                 stderr = _decode_output(stderr_b).strip()
             except (PermissionError, NotADirectoryError, FileNotFoundError) as exc:
@@ -633,7 +510,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     ) from exc
                 raise
             except asyncio.TimeoutError:
-                left_running = not await _stop_tree(proc, elevated=use_sudo)
+                left_running = r.left_running
                 partial = "\n".join(
                     t for t in (_decode_output(stdout_b).strip(), _decode_output(stderr_b).strip()) if t
                 )

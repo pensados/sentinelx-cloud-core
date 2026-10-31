@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from sentinelx_core.executor import HandlerError
+from sentinelx_core import executor_engine as EE
 from sentinelx_core.handlers import script as S
 from sentinelx_core.policy import Policy
 
@@ -56,7 +57,7 @@ async def test_cancelling_a_script_run_stops_the_script(tmp_path):
 
 @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
 async def test_a_timeout_does_not_wait_for_an_escaped_descendant(tmp_path, monkeypatch):
-    monkeypatch.setattr(S, "STOP_GRACE_SECONDS", 1.0)
+    monkeypatch.setattr(EE, "STOP_GRACE_SECONDS", 1.0)
     h, _ = _handler(tmp_path)
     pidfile = tmp_path / "escaped.pid"
     t0 = time.monotonic()

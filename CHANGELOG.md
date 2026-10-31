@@ -3,6 +3,24 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.47 - script_run uses run_process; one tree kill for the whole agent - 2026-10-31
+
+Stage 3, the last, of the process-lifecycle unification: every child the agent starts now goes through
+executor_engine.run_process.
+
+- One _kill_process_tree(proc, *, elevated) in executor_engine, merging script_run's copy into the engine's:
+  setsid descendants from /proc, `sudo kill -9 -- -<pgid>` for a root-owned (elevated) tree, taskkill without
+  a console window on Windows, proc.kill() as the last resort. run_process and _stop_process_tree take
+  `elevated`.
+- script_run calls run_process(..., elevated=use_sudo) instead of its own spawn, communicate, cancel and
+  timeout code; its cwd errors, interpreter_missing, kept paths and sudo env file are unchanged.
+- tests/test_process_contract.py: 9 callers (script_run plain and through sudo added), plus a test that
+  script_run asks for an elevated kill with sudo=true (a fake sudo runs as the same user, so it can't tell
+  the two kills apart; removing elevated fails it).
+- Exercised end to end on the dev agent with real sudo: a root-owned tree and a root setsid descendant both
+  killed at the 2 s timeout, nothing left running, no fallback taken; an ordinary sudo script with env and a
+  non-zero exit unchanged. Suite passes on 3.12 and 3.14.
+
 ## 0.23.46 - Edit, git and the local_api relay use run_process - 2026-10-31
 
 Stage 2 of the process-lifecycle unification (Jan's audit #8, #9, #17). None of these started their child in

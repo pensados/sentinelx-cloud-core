@@ -107,9 +107,21 @@ async def finish_cleanup(coro) -> None:
     task.result()
 
 
-def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """Best-effort kill of the shell and every descendant it started."""
-    kill_pids(descendants(proc.pid))   # those that left the group with setsid
+def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = False) -> None:
+    """Kill a child and everything it started (best effort; see STOP_GRACE_SECONDS).
+
+    One implementation for every caller since 0.23.47 (script_run had its own).
+    Decided by experiment rather than assumption:
+
+    - descendants that left the group with setsid are killed from a /proc snapshot
+      taken before the group dies (sxrep_E7RCC1FKQC7P);
+    - a tree started with sudo is root-owned and the agent user can't signal it:
+      killpg raises PermissionError and it survives, so `elevated` uses `sudo kill`;
+    - `kill -9 -<pgid>` is read as an option, not a group: it succeeds and kills
+      nothing. The `--` separator is what makes it a process group;
+    - a failed taskkill or sudo kill falls back to proc.kill() (sxrep_AZ931A9557MC).
+    """
+    kill_pids(descendants(proc.pid), elevated=elevated)   # those that left the group
     if sys.platform == "win32":
         try:
             # spawn_kwargs adds CREATE_NO_WINDOW, like every other child we
@@ -120,6 +132,7 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
             )
             if completed.returncode == 0:
                 return
+            logger.warning("taskkill exited %s; falling back to kill()", completed.returncode)
         except (OSError, subprocess.SubprocessError):
             logger.debug("taskkill process-tree cleanup failed", exc_info=True)
     else:
@@ -128,17 +141,29 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         except (ProcessLookupError, OSError):
             pgid = None
         if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-                return
-            except ProcessLookupError:
-                return
-            except PermissionError:
-                pass
+            if elevated:
+                try:
+                    done = subprocess.run(["sudo", "-n", "kill", "-9", "--", f"-{pgid}"],
+                                          capture_output=True, timeout=10)
+                    if done.returncode == 0:
+                        return
+                    logger.warning("sudo kill of process group %s exited %s; falling back to kill()",
+                                   pgid, done.returncode)
+                except Exception:  # noqa: BLE001
+                    logger.warning("sudo kill of process group failed", exc_info=True)
+            else:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                    return
+                except ProcessLookupError:
+                    return
+                except PermissionError:
+                    logger.warning("no permission to kill process group %s", pgid)
 
+    # Last resort: at least the process we spawned (a root-owned one may refuse).
     try:
         proc.kill()
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 
@@ -178,11 +203,11 @@ async def wait_gone(proc: asyncio.subprocess.Process, grace: float) -> bool:
         return False
 
 
-async def _stop_process_tree(proc: asyncio.subprocess.Process) -> bool:
+async def _stop_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = False) -> bool:
     """Kill the tree and wait briefly for it to go. Returns False when something
     outlived the kill and still held our pipes: we close our end and return
     instead of waiting for it, and it keeps running on its own."""
-    _kill_process_tree(proc)
+    _kill_process_tree(proc, elevated=elevated)
     if await wait_gone(proc, STOP_GRACE_SECONDS):
         return True
     transport = getattr(proc, "_transport", None)
@@ -261,6 +286,7 @@ async def run_process(
     input: bytes | None = None,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    elevated: bool = False,
 ) -> ProcResult:
     """Run argv to completion in its own process group: THE way the agent starts a
     child process (Jan's audit, 2026-10-31: every place that rolled its own lifecycle
@@ -275,7 +301,8 @@ async def run_process(
       again; then the cancellation propagates.
 
     `env` is the child's whole environment (None inherits the agent's); `input` is
-    written to stdin, which is then closed. tests/test_process_contract.py holds every
+    written to stdin, which is then closed. `elevated` is for a tree started through
+    sudo: the agent can't signal root's processes, so they are killed with sudo kill. tests/test_process_contract.py holds every
     caller to these guarantees.
     """
     proc = await asyncio.create_subprocess_exec(
@@ -292,10 +319,10 @@ async def run_process(
     try:
         out, err, timed_out = await communicate_partial(proc, timeout, input=input)
     except asyncio.CancelledError:
-        await finish_cleanup(_stop_process_tree(proc))
+        await finish_cleanup(_stop_process_tree(proc, elevated=elevated))
         raise
     if timed_out:
-        left_running = not await _stop_process_tree(proc)
+        left_running = not await _stop_process_tree(proc, elevated=elevated)
         return ProcResult(-1, out, err, timed_out=True, left_running=left_running)
     return ProcResult(proc.returncode if proc.returncode is not None else -1, out, err)
 

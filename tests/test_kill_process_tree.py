@@ -24,6 +24,7 @@ import time
 
 import pytest
 
+from sentinelx_core import executor_engine as EE
 from sentinelx_core.handlers import script as S
 
 
@@ -75,7 +76,7 @@ def test_the_elevated_path_uses_the_group_separator(monkeypatch):
         seen.append(argv)
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
-    monkeypatch.setattr(S.subprocess, "run", _fake_run)
+    monkeypatch.setattr(EE.subprocess, "run", _fake_run)
     proc = _spawn_tree()
     try:
         S._kill_process_tree(proc, elevated=True)
@@ -98,7 +99,7 @@ def test_the_elevated_path_uses_the_group_separator(monkeypatch):
 def test_a_non_elevated_tree_does_not_shell_out_to_sudo(monkeypatch):
     """Ordinary scripts must not need sudo to be cleaned up."""
     called = []
-    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: called.append(a))
+    monkeypatch.setattr(EE.subprocess, "run", lambda *a, **k: called.append(a))
     proc = _spawn_tree()
     time.sleep(0.3)
     S._kill_process_tree(proc, elevated=False)

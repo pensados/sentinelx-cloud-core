@@ -103,6 +103,29 @@ async def _via_local_api_relay(script, timeout, input=None, *, tmp_path, monkeyp
     return {"timed_out": False, "left_running": False, "out": out.decode()}
 
 
+async def _via_script_run(script, timeout, input=None, *, tmp_path, monkeypatch, sudo=False):
+    from sentinelx_core.handlers import script as S
+    from sentinelx_core.policy import Policy
+    if sudo:
+        bindir = tmp_path / "fakesudo"
+        bindir.mkdir(exist_ok=True)
+        # Like the real sudo: -n accepted, the command started with a reset
+        # environment. It also runs `sudo -n kill`, the elevated tree kill.
+        (bindir / "sudo").write_text('#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec env -i PATH="$PATH" "$@"\n')
+        (bindir / "sudo").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    base = tmp_path / "uploads"
+    base.mkdir(exist_ok=True)
+    r = await S.make_script_run_handler(Policy.empty(), base)(
+        {"interpreter": "bash", "content": script, "timeout": max(1, int(timeout)), "sudo": sudo})
+    return {"timed_out": r.get("timed_out", False), "left_running": r.get("left_running", False),
+            "out": r.get("output", "")}
+
+
+async def _via_script_run_sudo(script, timeout, input=None, *, tmp_path, monkeypatch):
+    return await _via_script_run(script, timeout, input, tmp_path=tmp_path, monkeypatch=monkeypatch, sudo=True)
+
+
 # name: (runner, takes input, reports left_running, needs tmp_path/monkeypatch)
 RUNNERS = {
     "run_process": (_via_run_process, True, True, False),
@@ -112,6 +135,8 @@ RUNNERS = {
     "git_ops": (_via_git_ops, True, False, True),
     "project_snapshot": (_via_project_snapshot, False, False, True),
     "local_api_relay": (_via_local_api_relay, True, False, True),
+    "script_run": (_via_script_run, False, True, True),
+    "script_run_sudo": (_via_script_run_sudo, False, True, True),
 }
 NAMES = list(RUNNERS)
 
@@ -186,3 +211,31 @@ async def test_input_reaches_stdin(name, tmp_path, monkeypatch):
     runner = _runner(name, tmp_path, monkeypatch)
     res = await runner("cat", 5, input=b"through stdin")
     assert res["out"] == "through stdin" and not res["timed_out"]
+
+
+async def test_script_run_with_sudo_asks_run_process_for_an_elevated_kill(tmp_path, monkeypatch):
+    """The fake sudo above runs as the same user, so an elevated kill and a plain one
+    look alike there; this checks the wiring itself. The real thing (root-owned
+    tree, sudo kill) was exercised end to end on the dev agent for 0.23.47."""
+    from sentinelx_core.handlers import script as S
+    from sentinelx_core.policy import Policy
+    seen = {}
+
+    async def fake_run_process(argv, **kw):
+        seen.update(kw)
+        return EE.ProcResult(0, b"ok", b"")
+    monkeypatch.setattr(S, "run_process", fake_run_process)
+    base = tmp_path / "uploads"
+    base.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+    (bindir / "sudo").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    await S.make_script_run_handler(Policy.empty(), base)(
+        {"interpreter": "bash", "content": "true", "timeout": 5, "sudo": True})
+    assert seen.get("elevated") is True
+    seen.clear()
+    await S.make_script_run_handler(Policy.empty(), base)(
+        {"interpreter": "bash", "content": "true", "timeout": 5})
+    assert seen.get("elevated") is False
