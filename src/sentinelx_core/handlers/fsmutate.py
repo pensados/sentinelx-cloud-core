@@ -65,7 +65,9 @@ chmod_failed / chown_failed.
 from __future__ import annotations
 
 import errno
+import asyncio
 import json
+import re as _re
 import os
 import shutil
 import subprocess
@@ -162,7 +164,6 @@ def _audit(op: str, detail: dict[str, Any]) -> None:
         pass
 
 
-import re as _re
 
 # A backup this agent created: "<name>.bak.<YYYYMMDD-HHMMSS>" for a file (make_backup
 # adds -%f microseconds), or "...bak.<ts>.tar.gz" for a directory. Matched exactly so
@@ -635,6 +636,9 @@ def make_chmod_handler(policy: Policy):
 # ---------------------------------------------------------------------------
 
 
+ICACLS_TIMEOUT_SECONDS = 60
+
+
 def make_chown_handler(policy: Policy):
     async def handle_chown(payload: dict[str, Any]) -> dict[str, Any]:
         """Change owner and/or group.
@@ -671,11 +675,22 @@ def make_chown_handler(policy: Policy):
                     "'group' has no Windows equivalent; on Windows chown sets "
                     "the owner only (pass 'owner').",
                 )
-            proc = subprocess.run(
-                ["icacls", str(target), "/setowner", str(owner)],
-                capture_output=True,
-                text=True,
-            )
+            # In a thread and bounded: a slow or wedged icacls used to block the
+            # agent's event loop indefinitely, every operation with it (Jan's audit
+            # #16; flagged by Ruff ASYNC221).
+            try:
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    ["icacls", str(target), "/setowner", str(owner)],
+                    capture_output=True,
+                    text=True,
+                    timeout=ICACLS_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise HandlerError(
+                    "chown_failed",
+                    f"icacls /setowner did not finish within {ICACLS_TIMEOUT_SECONDS} s",
+                ) from exc
             if proc.returncode != 0:
                 raise HandlerError(
                     "chown_failed",

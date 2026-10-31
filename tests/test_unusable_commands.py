@@ -12,7 +12,6 @@ the right one. So we say so instead.
 
 from __future__ import annotations
 
-import pytest
 
 from sentinelx_core.handlers import basic
 from sentinelx_core.policy import Policy

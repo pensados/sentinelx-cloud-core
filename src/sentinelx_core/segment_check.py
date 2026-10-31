@@ -674,11 +674,15 @@ def _assigned_names(segment: str) -> list[str]:
         while i < len(toks):
             t = toks[i]
             if t == "-a" and i + 1 < len(toks):
-                names.append(toks[i + 1]); i += 2; continue
+                names.append(toks[i + 1])
+                i += 2
+                continue
             if t in _READ_OPTS_WITH_VALUE:
-                i += 2; continue
+                i += 2
+                continue
             if t.startswith("-"):
-                i += 1; continue
+                i += 1
+                continue
             if _NAME.fullmatch(t):
                 names.append(t)
             i += 1

@@ -13,10 +13,8 @@ chdir happens after elevation). These tests pin the no-sudo side.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import os
-from pathlib import Path
 
 import pytest
 

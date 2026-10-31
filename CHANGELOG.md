@@ -3,6 +3,20 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.44 - Ruff pinned and required in CI; Windows chown no longer blocks the agent - 2026-10-31
+
+Suggested in Jan's audit of 2026-10-31.
+
+- Ruff 0.17.1 pinned in the dev extra, with an explicit bug-focused rule set in [tool.ruff.lint] (E4, E7,
+  E9, F, B, ASYNC, PLE; ASYNC109, ASYNC240 and B904 ignored with the reason written down). Without a
+  select, each release brought its own defaults (5 diagnostics on 0.4, 152 on 0.17). A new `lint` job runs
+  `ruff check src tests` on every push. Baseline cleaned: unused imports, mid-module imports, one-line
+  statements.
+- Windows chown (#16, ASYNC221): icacls runs in a thread with a 60 s timeout; it was a blocking
+  subprocess.run with no timeout inside the async handler, so a wedged icacls froze the agent.
+- tests/test_chown_windows_icacls.py: the event loop keeps running while icacls does, and a wedged icacls
+  gives chown_failed. 1 sabotage caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.43 - Failure-atomic move, copy, uploads and creates - 2026-10-31
 
 From Jan's audit of 2026-10-31 (items 10-13, 18): operations that destroyed or replaced first and found out

@@ -10,6 +10,8 @@ referenced directly.
 
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -65,8 +67,6 @@ Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 # nothing is worse than one that is absent, because it still holds a slot and
 # still looks connected. `help` stays for the same reason: the one op that can
 # explain why another is missing must not be the one that is missing.
-import logging
-
 logger = logging.getLogger(__name__)
 
 UNDISABLEABLE_OPS = frozenset({"ping", "capabilities", "state", "help"})

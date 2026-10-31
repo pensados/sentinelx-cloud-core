@@ -13,7 +13,6 @@ and the agent runs as its own. stderr is what separates the two cases.
 
 from __future__ import annotations
 
-import pytest
 
 from sentinelx_core.handlers.git_ops import _dubious_ownership
 

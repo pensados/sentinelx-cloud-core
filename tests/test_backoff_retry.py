@@ -9,7 +9,6 @@ had no way to say so.
 
 from __future__ import annotations
 
-import pytest
 
 from sentinelx_core.client import (
     BACKOFF_SCHEDULE,

@@ -7,7 +7,6 @@ through HOME (git reads ~/.gitconfig), PS4 with set -x, and read targets.
 from __future__ import annotations
 
 import dataclasses
-import os
 import subprocess
 import sys
 

@@ -9,13 +9,9 @@ against an 0700 worktree the agent user cannot enter.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import subprocess
-import sys
-import tempfile
-from pathlib import Path
 
 import pytest
 

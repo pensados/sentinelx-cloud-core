@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 
+from sentinelx_core.winspawn import spawn_kwargs
 from sentinelx_core.executor_engine import STOP_GRACE_SECONDS as _ENGINE_STOP_GRACE
 from sentinelx_core.executor_engine import communicate_partial, timeout_text, wait_gone
 from sentinelx_core.executor_engine import descendants, finish_cleanup, kill_pids
@@ -106,7 +107,6 @@ def _staging_oserror(exc: OSError, path: str) -> HandlerError:
         "staging_failed",
         f"cannot prepare the work area at {path!r}: {exc}.",
     )
-from sentinelx_core.winspawn import spawn_kwargs
 
 logger = logging.getLogger(__name__)
 

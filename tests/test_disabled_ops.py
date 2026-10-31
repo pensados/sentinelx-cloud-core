@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 
-import pytest
 
 from sentinelx_core.handlers import UNDISABLEABLE_OPS, build_registry
 from sentinelx_core.policy import Policy

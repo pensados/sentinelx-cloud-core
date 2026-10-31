@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from sentinelx_core.handlers.basic import make_capabilities_handler
 from sentinelx_core.handlers.progressive_help import summarize_capabilities
