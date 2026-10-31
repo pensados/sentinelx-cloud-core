@@ -3,6 +3,23 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.38 - Escaped descendants, uninterruptible cleanup, safe env-file cleanup - 2026-10-31
+
+Jan's follow-ups on 0.23.36, each reproduced on 3.11-3.14.
+
+- Cancellation and timeout (sxrep_E7RCC1FKQC7P): exec and script_run kill descendants that left the
+  process group with setsid, from a /proc snapshot of the tree taken before the group dies (Linux). The
+  cleanup after a cancellation runs to the end even if the task is cancelled again (finish_cleanup), in
+  the three exec runners and in script_run. left_running now covers what is out of reach: an orphan
+  already reparented out of the tree, or a root process the agent can't signal.
+- env with sudo (sxrep_5CE1B15G691J): the elevated sh removes the env file right after loading it; the
+  agent's backstop removal never raises, so a script that locks its workdir no longer turns success into
+  PermissionError, skips the cleanup or leaves the secret on disk.
+- cleanup=false (sxrep_69N1GEHNAN1K): sudo env names are checked before anything is staged, and every
+  HandlerError after staging carries workdir and script_path.
+- tests: test_script_run_followups.py (8); the two left_running tests now use an orphan, the case
+  left_running exists for. 6 sabotages caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.37 - left_running detection works on Python 3.14 - 2026-10-31
 
 Reported by Jan after 0.23.36 (sxrep_9GWKAWPTXZWM): the new escaped-descendant test passed on 3.12 and

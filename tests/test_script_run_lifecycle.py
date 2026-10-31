@@ -61,7 +61,11 @@ async def test_a_timeout_does_not_wait_for_an_escaped_descendant(tmp_path, monke
     pidfile = tmp_path / "escaped.pid"
     t0 = time.monotonic()
     res = await h({"interpreter": "bash", "timeout": 1,
-                   "content": f"setsid sh -c 'echo $$ > {pidfile}; sleep 8' & sleep 30"})
+                   # An ORPHAN: the subshell exits at once, so the setsid'd process is
+                   # reparented out of our tree and can't be found or killed (0.23.38
+                   # kills escaped descendants still in the tree). It holds the pipes:
+                   # that is what left_running is for.
+                   "content": f"(setsid sh -c 'echo $$ > {pidfile}; sleep 8' &); sleep 30"})
     elapsed = time.monotonic() - t0
     try:
         assert res["timed_out"] and res.get("left_running") is True, res

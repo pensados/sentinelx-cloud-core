@@ -22,11 +22,12 @@ pytestmark = [
 ]
 
 
-async def test_exec_reports_a_descendant_that_escaped_and_holds_the_pipes(tmp_path, monkeypatch):
+async def test_exec_reports_an_orphan_that_holds_the_pipes(tmp_path, monkeypatch):
     monkeypatch.setattr(EE, "STOP_GRACE_SECONDS", 1.0)
     pidfile = tmp_path / "escaped.pid"
     t0 = time.monotonic()
-    res = await EE.run_shell(f"setsid sh -c 'echo $$ > {pidfile}; sleep 8' & sleep 30", timeout=1)
+    # An orphan (see test_script_run_lifecycle): out of our tree, so only left_running can tell.
+    res = await EE.run_shell(f"(setsid sh -c 'echo $$ > {pidfile}; sleep 8' &); sleep 30", timeout=1)
     elapsed = time.monotonic() - t0
     try:
         assert res.get("timed_out") and res.get("left_running") is True, res

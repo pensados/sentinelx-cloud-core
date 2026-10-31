@@ -31,8 +31,72 @@ def _process_group_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def descendants(pid: int) -> list[int]:
+    """Every process below `pid`, read from /proc (Linux; empty elsewhere).
+
+    A descendant that called setsid has left the process group, so killpg misses
+    it, but it is still our descendant here until its parent dies. Read before
+    killing anything: once the shell dies, the escaped child is reparented and
+    out of reach (sxrep_E7RCC1FKQC7P).
+    """
+    if not sys.platform.startswith("linux"):
+        return []
+    out: list[int] = []
+    todo = [pid]
+    while todo:
+        p = todo.pop()
+        try:
+            tasks = os.listdir(f"/proc/{p}/task")
+        except OSError:
+            continue
+        for t in tasks:
+            try:
+                with open(f"/proc/{p}/task/{t}/children") as fh:
+                    kids = [int(x) for x in fh.read().split()]
+            except (OSError, ValueError):
+                continue
+            out.extend(kids)
+            todo.extend(kids)
+    return out
+
+
+def kill_pids(pids: list[int], *, elevated: bool = False) -> None:
+    """SIGKILL each pid; through sudo when they may be root-owned. Best effort."""
+    if not pids:
+        return
+    if elevated:
+        try:
+            subprocess.run(["sudo", "-n", "kill", "-9", "--", *map(str, pids)],
+                           capture_output=True, timeout=10)
+        except Exception:  # noqa: BLE001
+            logger.warning("sudo kill of escaped descendants failed", exc_info=True)
+        return
+    for p in pids:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+async def finish_cleanup(coro) -> None:
+    """Run a cleanup coroutine to the end even if the caller is cancelled again.
+
+    A second task.cancel() used to interrupt the cleanup of the first: the call
+    returned while waiting for the tree was still in progress (sxrep_E7RCC1FKQC7P).
+    The cleanup is bounded (STOP_GRACE_SECONDS), so finishing it is cheap.
+    """
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    task.result()
+
+
 def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
     """Best-effort kill of the shell and every descendant it started."""
+    kill_pids(descendants(proc.pid))   # those that left the group with setsid
     if sys.platform == "win32":
         try:
             # spawn_kwargs adds CREATE_NO_WINDOW, like every other child we
@@ -280,7 +344,7 @@ async def run_shell(
         try:
             stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
         except asyncio.CancelledError:
-            await _stop_process_tree(proc)
+            await finish_cleanup(_stop_process_tree(proc))
             raise
         if timed_out:
             left_running = not await _stop_process_tree(proc)
@@ -349,7 +413,7 @@ async def run_shell_split(
         try:
             stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
         except asyncio.CancelledError:
-            await _stop_process_tree(proc)
+            await finish_cleanup(_stop_process_tree(proc))
             raise
         if timed_out:
             left_running = not await _stop_process_tree(proc)
@@ -399,7 +463,7 @@ async def get_command_help(cmd: str, timeout: float = 10.0) -> str:
             await _stop_process_tree(proc)
             return "Error getting help: timeout"
         except asyncio.CancelledError:
-            await _stop_process_tree(proc)
+            await finish_cleanup(_stop_process_tree(proc))
             raise
 
         text = stdout_b.decode(errors="replace") or stderr_b.decode(errors="replace") or "No help available"

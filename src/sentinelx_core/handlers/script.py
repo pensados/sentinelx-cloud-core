@@ -48,6 +48,7 @@ import asyncio
 
 from sentinelx_core.executor_engine import STOP_GRACE_SECONDS as _ENGINE_STOP_GRACE
 from sentinelx_core.executor_engine import communicate_partial, timeout_text, wait_gone
+from sentinelx_core.executor_engine import descendants, finish_cleanup, kill_pids
 import logging
 import re
 import shlex
@@ -214,7 +215,11 @@ def _kill_process_tree(proc, *, elevated: bool = False) -> None:
     - `kill -9 -<pgid>` is read as an option, not a group. It returns success
       and kills nothing, which is the worst way to fail. The `--` separator is
       what makes it a process group.
+
+    A descendant that called setsid is out of the group: it is killed from a /proc
+    snapshot of the tree taken before the group dies (sxrep_E7RCC1FKQC7P).
     """
+    kill_pids(descendants(proc.pid), elevated=elevated)
     if sys.platform == "win32":
         try:
             subprocess.run(
@@ -290,10 +295,33 @@ async def _stop_tree(proc, *, elevated: bool) -> bool:
 # users could read them. The cwd travels as a positional argument, as before.
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SUDO_WRAPPER = (
-    'if [ -n "$1" ]; then set -a; . "$1" || exit 126; set +a; fi; '
+    'if [ -n "$1" ]; then set -a; . "$1" || exit 126; set +a; rm -f -- "$1"; fi; '
     'if [ -n "$2" ]; then cd "$2" || { echo "sentinelx: cannot enter $2" >&2; exit 126; }; fi; '
     'shift 2; exec "$@"'
 )
+
+
+def _remove_env_file(env_file: Path | None, workdir: Path) -> None:
+    """Backstop for the env file; the elevated sh already removed it after loading it.
+
+    Never raises. A script that made its workdir unreadable turned a successful run
+    into a PermissionError here, skipped the rest of the cleanup and left the secret
+    on disk (sxrep_5CE1B15G691J).
+    """
+    if env_file is None:
+        return
+    for attempt in (1, 2):
+        try:
+            env_file.unlink(missing_ok=True)
+            return
+        except OSError:
+            if attempt == 2:
+                break
+            try:
+                os.chmod(workdir, 0o700)
+            except OSError:
+                break
+    logger.warning("could not remove the script env file %s", env_file)
 
 
 def _decode_output(raw: bytes) -> str:
@@ -373,6 +401,16 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             for k, v in env_extra.items()
         ):
             raise HandlerError("invalid_payload", "'env' must be dict[str, str]")
+        if sudo and sys.platform != "win32" and env_extra:
+            # Checked before anything is staged: after staging, cleanup=false left an
+            # undiscoverable workdir behind this error (sxrep_69N1GEHNAN1K).
+            bad = sorted(k for k in env_extra if not _ENV_NAME.fullmatch(k))
+            if bad:
+                raise HandlerError(
+                    "invalid_payload",
+                    "with sudo=true, env names must be letters, digits and _ "
+                    f"(not starting with a digit): {bad}",
+                )
 
         # Workdir. A full disk surfaces here first, and used to escape as a bare
         # "internal_error: [Errno 28] No space left on device" -- which reads like
@@ -495,13 +533,6 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
             # metacharacters is just a directory name that does not exist.
             spawn_cwd = cwd
             if use_sudo and env_extra:
-                bad = sorted(k for k in env_extra if not _ENV_NAME.fullmatch(k))
-                if bad:
-                    raise HandlerError(
-                        "invalid_payload",
-                        "with sudo=true, env names must be letters, digits and _ "
-                        f"(not starting with a digit): {bad}",
-                    )
                 env_file = workdir / "sentinelx_env.sh"
                 fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -544,7 +575,7 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     # the cancellation through, as exec does. Before 0.23.36 the
                     # finally removed the workdir while the script kept running and
                     # its side effects still happened (sxrep_E7RCC1FKQC7P).
-                    await _stop_tree(proc, elevated=use_sudo)
+                    await finish_cleanup(_stop_tree(proc, elevated=use_sudo))
                     raise
                 if timed_out:
                     raise asyncio.TimeoutError
@@ -625,11 +656,19 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
 
             return response
 
+        except HandlerError as exc:
+            # cleanup=false keeps the workdir: every failure after staging says where.
+            if not cleanup:
+                exc.details = {"workdir": str(workdir), "script_path": str(script_path),
+                               **(exc.details or {})}
+            raise
         finally:
-            if env_file is not None:
-                # It may hold secrets: gone even when cleanup=false keeps the rest.
-                env_file.unlink(missing_ok=True)
+            _remove_env_file(env_file, workdir)
             if cleanup:
+                try:
+                    os.chmod(workdir, 0o700)   # a script may have locked it
+                except OSError:
+                    pass
                 shutil.rmtree(workdir, ignore_errors=True)
 
     return handle_script_run
