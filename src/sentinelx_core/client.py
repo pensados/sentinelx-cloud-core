@@ -6,6 +6,7 @@ ping/pong heartbeat, dispatching incoming requests to the executor.
 
 from __future__ import annotations
 
+from sentinelx_core.huburl import hub_bases
 import asyncio
 import json
 import logging
@@ -291,16 +292,9 @@ class HubClient:
         config_path: Path,
         identity_path: Path | None = None,
     ) -> None:
-        # Normalize: hub URL might be https://, we need wss://
-        if hub_url.startswith("http://"):
-            self._ws_url = "ws://" + hub_url[7:]
-        elif hub_url.startswith("https://"):
-            self._ws_url = "wss://" + hub_url[8:]
-        else:
-            self._ws_url = hub_url
-
-        # Kept as-is for the HTTP rotate endpoint (which is http(s), not ws).
-        self._hub_url = hub_url
+        # http(s):// or ws(s)://, with or without /agent/connect: the HTTP base is for
+        # the rotate endpoint, the WebSocket base for /agent/connect (see huburl).
+        self._hub_url, self._ws_url = hub_bases(hub_url)
         # Where identity.json lives; the rotated credential is written in a
         # writable dir near it. None disables rotation (nowhere to persist).
         self._identity_path = identity_path

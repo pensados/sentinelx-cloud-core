@@ -222,12 +222,16 @@ def _kill_process_tree(proc, *, elevated: bool = False) -> None:
     kill_pids(descendants(proc.pid), elevated=elevated)
     if sys.platform == "win32":
         try:
-            subprocess.run(
+            done = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=10,
             )
-            return
+            if done.returncode == 0:
+                return
+            # A failed taskkill must fall through to proc.kill(), as exec's does
+            # (sxrep_AZ931A9557MC: it returned as if it had worked).
+            logger.warning("taskkill exited %s; falling back to kill()", done.returncode)
         except Exception:
             logger.warning("taskkill failed; falling back to kill()", exc_info=True)
     # POSIX: signal the whole group.
@@ -240,12 +244,15 @@ def _kill_process_tree(proc, *, elevated: bool = False) -> None:
         if elevated:
             # Root-owned tree: we have no permission of our own.
             try:
-                subprocess.run(
+                done = subprocess.run(
                     ["sudo", "-n", "kill", "-9", "--", f"-{pgid}"],
                     capture_output=True,
                     timeout=10,
                 )
-                return
+                if done.returncode == 0:
+                    return
+                logger.warning("sudo kill of process group %s exited %s; falling back to kill()",
+                               pgid, done.returncode)
             except Exception:
                 logger.warning("sudo kill of process group failed", exc_info=True)
         else:
@@ -257,10 +264,10 @@ def _kill_process_tree(proc, *, elevated: bool = False) -> None:
             except PermissionError:
                 logger.warning("no permission to kill process group %s", pgid)
 
-    # Last resort: at least the process we spawned.
+    # Last resort: at least the process we spawned (a root-owned one may refuse).
     try:
         proc.kill()
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 

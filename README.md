@@ -380,10 +380,11 @@ pip install -e '.[dev]'
 pytest                              # unit tests
 ```
 
-To run the agent against a hub other than the production one:
+To run the agent against a hub other than the production one (the hub's base URL,
+`http(s)://` or `ws(s)://`; the agent adds `/agent/connect` itself):
 
 ```bash
-SENTINELX_HUB_URL=wss://localhost:8000/agent/connect \
+SENTINELX_HUB_URL=https://localhost:8000 \
   python3 -m sentinelx_core --identity-file /tmp/dev-identity.json
 ```
 

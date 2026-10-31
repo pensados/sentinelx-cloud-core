@@ -98,7 +98,22 @@ SKIP_OPS = frozenset({"read_audit", "ping"})
 # Fields that carry file bytes rather than a description of what was done.
 _BINARY_FIELDS = frozenset({"content_base64"})
 MAX_FIELD_CHARS = 65536
+# Whole-entry cap. Per-field compaction let thousands of small strings through: a
+# 918 KB line from one valid local_api request, ~4.3 GiB at MAX_LINES (sxrep_YC39MPSTA6S2).
+MAX_ENTRY_CHARS = 64 * 1024
 _HEAD_CHARS = 2048
+
+
+def _payload_summary(payload: Any) -> dict[str, Any]:
+    """Stand-in for a payload whose entry would exceed MAX_ENTRY_CHARS."""
+    raw = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True)
+    return {
+        "_summarized": True,
+        "chars": len(raw),
+        "sha256": hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest(),
+        "keys": sorted(map(str, payload))[:50] if isinstance(payload, dict) else None,
+        "head": raw[:_HEAD_CHARS],
+    }
 
 
 def _binary_summary(b64: str) -> dict[str, Any]:
@@ -178,6 +193,9 @@ def record(op: str, payload: dict[str, Any], ok: bool,
         if result_returncode is not None:
             entry["result_returncode"] = int(result_returncode)
         line = json.dumps(entry, ensure_ascii=False, default=str)
+        if len(line) > MAX_ENTRY_CHARS:
+            entry["payload"] = _payload_summary(entry["payload"])
+            line = json.dumps(entry, ensure_ascii=False, default=str)
 
         AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
         with AUDIT_PATH.open("a", encoding="utf-8") as f:

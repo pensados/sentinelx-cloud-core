@@ -354,6 +354,34 @@ def build_validator_preset(preset: str, target: Path) -> list[str]:
     )
 
 
+def _write_over(target: Path, source: Path) -> None:
+    """Write source's bytes over target in place: same inode, so owner, group, mode
+    and ACLs stay."""
+    with open(target, "r+b") as dst, open(source, "rb") as src:
+        dst.write(src.read())
+        dst.truncate()
+        dst.flush()
+        os.fsync(dst.fileno())
+
+
+def _recovery_copy(target: Path) -> Path:
+    """A 0600 copy of target in the temp dir, for the length of an in-place write."""
+    fd, name = tempfile.mkstemp(prefix=".sentinelx-restore-")
+    guard = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as out, open(target, "rb") as src:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+    except OSError as exc:
+        guard.unlink(missing_ok=True)
+        raise OSError(
+            f"couldn't keep a recovery copy of {target} before writing it in place, "
+            f"so it was left unchanged: {exc}"
+        ) from exc
+    return guard
+
+
 def _install(tmp_path: Path, target: Path, result: "EditResult") -> None:
     """Put the new content at target without changing who owns it.
 
@@ -379,18 +407,34 @@ def _install(tmp_path: Path, target: Path, result: "EditResult") -> None:
         os.replace(tmp_path, target)
         return
     try:
-        dst = open(target, "r+b")
+        open(target, "r+b").close()
     except PermissionError as exc:
         raise SafeEditError(
             "not_writable",
             f"{target} is not writable by the agent's user, and replacing it "
             "would hand the file to that user; nothing was changed",
         ) from exc
-    with dst, open(tmp_path, "rb") as src:
-        dst.write(src.read())
-        dst.truncate()
-        dst.flush()
-        os.fsync(dst.fileno())
+    # Writing in place isn't atomic; that was acceptable because a backup was taken
+    # first. secret=... takes none on purpose, so a failed write left a half-written
+    # credential and no copy (sxrep_YW9E73QKVSQC). Keep a private recovery copy for
+    # the length of the write and put it back if the write fails.
+    guard = None if (result.backup or result.backup_before_restore) else _recovery_copy(target)
+    try:
+        _write_over(target, tmp_path)
+    except OSError as exc:
+        if guard is None:
+            raise
+        try:
+            _write_over(target, guard)
+        except OSError as exc2:
+            raise OSError(
+                f"{exc}; putting the original back also failed ({exc2}). It is kept, "
+                f"readable only by the agent's user, at {guard}"
+            ) from exc
+        guard.unlink(missing_ok=True)
+        raise OSError(f"{exc}; the original content was put back") from exc
+    if guard is not None:
+        guard.unlink(missing_ok=True)
     result.in_place = True
     result.chown_skipped = False  # the original owner, group and mode are kept
 

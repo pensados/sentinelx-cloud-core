@@ -14,6 +14,7 @@ installing, turns that into an immediate answer.
 
 from __future__ import annotations
 
+from sentinelx_core.huburl import hub_bases
 import asyncio
 import json
 from dataclasses import dataclass
@@ -37,11 +38,7 @@ class PreflightResult:
 
 
 def _ws_url(hub_url: str) -> str:
-    if hub_url.startswith("http://"):
-        return "ws://" + hub_url[7:]
-    if hub_url.startswith("https://"):
-        return "wss://" + hub_url[8:]
-    return hub_url
+    return hub_bases(hub_url)[1]
 
 
 async def verify_enrollment(hub_url: str, token: str) -> PreflightResult:

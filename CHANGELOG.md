@@ -3,6 +3,22 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.40 - Secret edits recoverable, audit entries capped, kill fallbacks, alternate hub URL - 2026-10-31
+
+Jan's reports of 2026-10-31.
+
+- secret edits (sxrep_YW9E73QKVSQC): when the owner can't be preserved, the edit writes in place, which
+  isn't atomic and relied on the backup that secret=... skips on purpose. Without a backup, a 0600
+  recovery copy is kept in the temp dir for the length of the write and put back if it fails; if even
+  the copy fails, the file is left unchanged. (vendored pensa_safe_edit: _write_over, _recovery_copy.)
+- local audit (sxrep_YC39MPSTA6S2): an entry over MAX_ENTRY_CHARS (64 KiB) keeps only a summary of the
+  payload (size, SHA-256, keys, head). Per-field compaction let many small strings through.
+- script_run (sxrep_AZ931A9557MC): a failed taskkill or sudo kill falls back to proc.kill(), as exec's
+  does; that last resort no longer raises on a process the agent can't signal.
+- alternate hub URL (sxrep_058HW8X403G3, sxrep_C8GHQR7WEGKS): huburl.hub_bases() accepts http(s):// or
+  ws(s)://, with or without /agent/connect, for connect, verify and rotate. The README sample is a base URL.
+- tests/test_jan_reports_1031.py. 4 sabotages caught. Suite passes on 3.12 (twice) and 3.14.
+
 ## 0.23.39 - SECURITY: allowlist chains can't assign variables that steer programs - 2026-10-31
 
 Reported by Jan (sxrep_NBEA83P4PV36): in allowlist mode, with only `ls` allowed, `PATH=<dir>:$PATH; ls`
