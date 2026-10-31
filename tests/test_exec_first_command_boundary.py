@@ -15,6 +15,14 @@ import pytest
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
 
+@pytest.fixture(autouse=True)
+def _without_allowlist_prelude(monkeypatch):
+    # These tests pin what the chain gate lets through and what reaches run_shell.
+    # The allowlist prelude (0.23.41) is tested on its own in
+    # test_exec_allowlist_prelude.py; here it would only prefix every command.
+    import sentinelx_core.handlers.exec as _ex
+    monkeypatch.setattr(_ex, "ALLOWLIST_PRELUDE", "")
+
 
 async def _run(monkeypatch, allow, command, platform="linux", strict=False):
     from sentinelx_core.handlers import exec as ex

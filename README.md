@@ -408,3 +408,18 @@ console-script entry point for standalone/manual use.
 ## License
 
 Apache License 2.0 — see [LICENSE](./LICENSE).
+
+
+## What `exec_mode: allowlist` promises
+
+The allowlist is a guardrail for a well-meaning assistant: it keeps it from running
+what the host owner didn't authorize, by mistake or by a wrong turn of reasoning. Every
+command in a chain must be allowed, substitutions are checked, and the variables that
+decide which program runs (PATH, HOME and every other exported variable) are read-only
+while the chain runs.
+
+It is not a sandbox against someone deliberately trying to escape. A full shell has
+more ways to change its own behaviour than any checker can model. If the assistant, or
+whoever can steer it, must not be able to affect the host at all, give it a host of its
+own: a disposable VM (the compute tools create and enroll one; with `grant_sudo` it gets
+root on a machine with nothing on it you care about).

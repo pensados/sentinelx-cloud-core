@@ -123,6 +123,26 @@ def _classify_rejection(command: str) -> tuple[str, str]:
     )
 
 
+# Allowlist mode runs the chain after this prelude (0.23.41). The chain check can't
+# model every way bash changes its own state: Jan found assignment words, for/read
+# targets and printf -v (sxrep_NBEA83P4PV36), and any of them could point an allowed
+# command name at another binary. So before the chain starts, PATH loses its empty
+# and relative entries, and the variables that decide what runs become read-only:
+# PATH, IFS, PS4, BASH_ENV, ENV, CDPATH and every exported variable (HOME, LESSOPEN,
+# ...) except those bash maintains itself. Programs still get the normal environment;
+# readonly isn't inherited. Pure bash: tr or grep would themselves resolve via PATH.
+# The allowlist is a guardrail against mistakes, not a sandbox: this closes the
+# variable class, not every possible shell escape (see README, "exec_mode").
+ALLOWLIST_PRELUDE = (
+    '__sx_p=; IFS=: read -ra __sx_a <<< "$PATH"; '
+    'for __sx_d in "${__sx_a[@]}"; do case $__sx_d in /*) __sx_p="${__sx_p:+$__sx_p:}$__sx_d";; esac; done; '
+    'PATH=$__sx_p; unset __sx_p __sx_a __sx_d; '
+    'for __sx_v in $(compgen -e 2>/dev/null); do '
+    'case $__sx_v in PWD|OLDPWD|SHLVL|_) ;; *) readonly "$__sx_v";; esac; done; '
+    'unset __sx_v; readonly PATH IFS PS4 BASH_ENV ENV CDPATH; '
+)
+
+
 def make_exec_handler(policy: Policy):
     """Return an async handler bound to the given policy."""
 
@@ -282,6 +302,8 @@ def make_exec_handler(policy: Policy):
                     },
                 )
 
+        if sys.platform != "win32":
+            command = ALLOWLIST_PRELUDE + command
         return await run_shell(command, timeout=timeout)
 
     return handle_exec

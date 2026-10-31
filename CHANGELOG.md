@@ -3,6 +3,21 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.41 - SECURITY: allowlist mode makes the variables that decide what runs read-only - 2026-10-31
+
+After 0.23.39, Jan reached PATH through printf -v (sxrep_NBEA83P4PV36), a mechanism the chain check
+doesn't model. Rather than enumerating every way bash can set a variable, allowlist mode now runs the
+chain after a prelude: PATH loses empty and relative entries, then PATH, IFS, PS4, BASH_ENV, ENV, CDPATH
+and every exported variable (except PWD, OLDPWD, SHLVL, _) become read-only. Programs still get the
+normal environment. Unrestricted mode and Windows are unchanged.
+
+- README: what exec_mode allowlist promises (a guardrail against mistakes, not a sandbox against
+  deliberate escapes; for that, a disposable VM).
+- tests/test_exec_allowlist_prelude.py: Jan's printf -v chain through the real handler, relative PATH
+  entries, read-only exported variables, ordinary chains without noise, unrestricted mode untouched.
+  3 sabotages caught. The two gate test files that pin the exact command reaching run_shell disable the
+  prelude with a fixture. Suite passes on 3.12 and 3.14.
+
 ## 0.23.40 - Secret edits recoverable, audit entries capped, kill fallbacks, alternate hub URL - 2026-10-31
 
 Jan's reports of 2026-10-31.
