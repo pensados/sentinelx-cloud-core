@@ -3,6 +3,18 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.49 - Python scripts import from their cwd; README on the edit helper - 2026-10-31
+
+From Jan's audit of 2026-10-31 (#5, #7).
+
+- script_run with python3 and a cwd (#5) runs `python3 -c <runner> script.py`: `-c` puts the cwd first on
+  sys.path, so a module beside the work imports, as ./helper.sh does for bash. sys.path[0] used to be the
+  private staging dir. runpy keeps __name__, __file__ and sys.argv[0]. Without a cwd nothing changes.
+- README (#7): sentinel_edit runs pensa_safe_edit as a helper process, not in-process as it said, and that
+  is deliberate: a cancelled or timed-out edit kills the helper and its validators, so it can't commit
+  afterwards; a thread inside the agent couldn't be stopped that way.
+- tests/test_script_run_python_cwd.py, 1 sabotage caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.48 - file_url: connect to the validated address; cancelling stops the fetch - 2026-10-31
 
 From Jan's audit of 2026-10-31 (#14, #15).

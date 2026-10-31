@@ -391,9 +391,14 @@ SENTINELX_HUB_URL=https://localhost:8000 \
 ## Vendored: pensa-safe-edit
 
 The actual file mutation for `sentinel_edit` is done by a small stdlib-only
-module vendored at `src/sentinelx_core/vendored/pensa_safe_edit.py`. It is
-called in-process via its Python API (not shelled out), so there is no
-`shell=True` anywhere in the edit path. It does its work via temp files +
+module vendored at `src/sentinelx_core/vendored/pensa_safe_edit.py`. The handler
+runs it as a helper process (`python -m sentinelx_core.vendored.pensa_safe_edit`,
+under `sudo` for `sudo=true`) from an argv list, never through a shell, so there
+is no `shell=True` anywhere in the edit path. The process boundary is deliberate:
+a cancelled or timed-out edit kills the helper and any validator it started
+(through `run_process`, like every child the agent starts), so it can't still
+commit afterwards; an edit running in a thread inside the agent couldn't be
+stopped that way. It does its work via temp files +
 atomic rename, makes a timestamped backup before mutating, preserves file
 metadata, and can run an optional pre-commit validator
 (json/yaml/toml/python/sh/nginx/systemd presets) — if validation fails the

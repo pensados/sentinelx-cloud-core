@@ -115,6 +115,14 @@ TIMEOUT_MIN = 1
 TIMEOUT_MAX = 600
 ALLOWED_INTERPRETERS = ("bash", "python3", "powershell", "pwsh")
 
+# `python -c` puts the working directory first on sys.path, as running from cwd
+# should; a script run by path gets its own (private, staging) directory instead.
+# runpy keeps __name__ == "__main__", __file__ and sys.argv[0] as they were.
+_PY_RUN_FROM_CWD = (
+    "import runpy, sys; sys.argv = sys.argv[1:]; "
+    "runpy.run_path(sys.argv[0], run_name='__main__')"
+)
+
 # Interpreters whose script file is a .ps1.
 _POWERSHELL_INTERPRETERS = ("powershell", "pwsh")
 
@@ -391,7 +399,12 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
                     py = str(_py)
                 else:
                     py = "python3"
-                argv.extend([py, str(script_path)])
+                if cwd:
+                    # With a cwd, modules beside the work must import, as `./helper.sh`
+                    # does for bash; sys.path[0] was the staging dir (Jan's audit #5).
+                    argv.extend([py, "-c", _PY_RUN_FROM_CWD, str(script_path)])
+                else:
+                    argv.extend([py, str(script_path)])
             else:  # powershell / pwsh
                 exe = shutil.which(interpreter) or (
                     "pwsh" if interpreter == "pwsh" else "powershell"
