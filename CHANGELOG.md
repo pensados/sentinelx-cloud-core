@@ -3,6 +3,20 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.45 - One process lifecycle: run_process, and a contract every caller must meet - 2026-10-31
+
+Stage 1 of unifying how the agent starts child processes (Jan's audit: every place that rolled its own
+lifecycle got part of it wrong).
+
+- executor_engine.run_process(argv, timeout, input, cwd, env) -> ProcResult: own process group; output
+  read as it arrives; on timeout the tree is killed (setsid descendants included) and waited for at most
+  the grace, with left_running; on cancellation the same kill, run to the end, then the cancellation
+  propagates. communicate_partial takes optional stdin input.
+- run_shell and run_shell_split use it; their results are unchanged.
+- tests/test_process_contract.py: the contract (cancel, timeout, setsid descendant, orphan, stdin) run
+  against every caller; stage 2 adds edit, git and the local_api relay. 3 sabotages caught.
+  Suite passes on 3.12 and 3.14.
+
 ## 0.23.44 - Ruff pinned and required in CI; Windows chown no longer blocks the agent - 2026-10-31
 
 Suggested in Jan's audit of 2026-10-31.

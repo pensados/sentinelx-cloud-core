@@ -9,6 +9,7 @@ Source: /home/carlos/projects/sentinelx/agent.py (legacy SentinelX 0.3.5)
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import asyncio
 import logging
 import os
@@ -195,7 +196,7 @@ async def _stop_process_tree(proc: asyncio.subprocess.Process) -> bool:
 
 
 async def communicate_partial(
-    proc: asyncio.subprocess.Process, timeout: float | None
+    proc: asyncio.subprocess.Process, timeout: float | None, input: bytes | None = None
 ) -> tuple[bytes, bytes, bool]:
     """proc.communicate() under a timeout that keeps what was already read.
 
@@ -206,6 +207,22 @@ async def communicate_partial(
     owns stopping the process tree on a timeout.
     """
     out, err = bytearray(), bytearray()
+
+    async def feed() -> None:
+        # `input`, like communicate(input=...): written, then stdin closed so the
+        # child sees EOF. A child that exits without reading it is not an error.
+        if input is None or proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(input)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def pump(stream, buf: bytearray) -> None:
         if stream is None:
@@ -218,12 +235,69 @@ async def communicate_partial(
 
     try:
         await asyncio.wait_for(
-            asyncio.gather(pump(proc.stdout, out), pump(proc.stderr, err), proc.wait()),
+            asyncio.gather(feed(), pump(proc.stdout, out), pump(proc.stderr, err), proc.wait()),
             timeout=timeout,
         )
         return bytes(out), bytes(err), False
     except TimeoutError:
         return bytes(out), bytes(err), True
+
+
+@dataclass(frozen=True)
+class ProcResult:
+    """What run_process saw. returncode is -1 when the timeout stopped the process."""
+
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool = False
+    left_running: bool = False
+
+
+async def run_process(
+    argv: list[str],
+    *,
+    timeout: float | None,
+    input: bytes | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> ProcResult:
+    """Run argv to completion in its own process group: THE way the agent starts a
+    child process (Jan's audit, 2026-10-31: every place that rolled its own lifecycle
+    got some part of it wrong). It guarantees what each of those places needs:
+
+    - its own process group (a new session on POSIX), so the whole tree can be stopped;
+    - output read as it arrives, so a timeout keeps what the process already wrote;
+    - on timeout, the tree is killed, including descendants that left the group with
+      setsid, and waited for at most STOP_GRACE_SECONDS; left_running says whether
+      something outlived it;
+    - on cancellation, the same kill, run to the end even if the task is cancelled
+      again; then the cancellation propagates.
+
+    `env` is the child's whole environment (None inherits the agent's); `input` is
+    written to stdin, which is then closed. tests/test_process_contract.py holds every
+    caller to these guarantees.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        **spawn_kwargs(
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            **_process_group_kwargs(),
+        ),
+    )
+    try:
+        out, err, timed_out = await communicate_partial(proc, timeout, input=input)
+    except asyncio.CancelledError:
+        await finish_cleanup(_stop_process_tree(proc))
+        raise
+    if timed_out:
+        left_running = not await _stop_process_tree(proc)
+        return ProcResult(-1, out, err, timed_out=True, left_running=left_running)
+    return ProcResult(proc.returncode if proc.returncode is not None else -1, out, err)
 
 
 LEFT_RUNNING_NOTE = (
@@ -343,23 +417,9 @@ async def run_shell(
         full_env.update(env)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *_shell_argv(cmd),
-            **spawn_kwargs(
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=full_env,
-                **_process_group_kwargs(),
-            ),
-        )
-        try:
-            stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
-        except asyncio.CancelledError:
-            await finish_cleanup(_stop_process_tree(proc))
-            raise
-        if timed_out:
-            left_running = not await _stop_process_tree(proc)
+        r = await run_process(_shell_argv(cmd), timeout=timeout, cwd=cwd, env=full_env)
+        stdout_b, stderr_b, left_running = r.stdout, r.stderr, r.left_running
+        if r.timed_out:
             partial = "\n".join(
                 t for t in (stdout_b.decode(errors="replace").strip(),
                             stderr_b.decode(errors="replace").strip()) if t
@@ -383,7 +443,7 @@ async def run_shell(
         return {
             "output": output,
             "duration": round(time.time() - start, 2),
-            "returncode": proc.returncode,
+            "returncode": r.returncode,
         }
 
     except Exception as exc:  # noqa: BLE001
@@ -412,23 +472,9 @@ async def run_shell_split(
         full_env.update(env)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *_shell_argv(cmd),
-            **spawn_kwargs(
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=full_env,
-                **_process_group_kwargs(),
-            ),
-        )
-        try:
-            stdout_b, stderr_b, timed_out = await communicate_partial(proc, timeout)
-        except asyncio.CancelledError:
-            await finish_cleanup(_stop_process_tree(proc))
-            raise
-        if timed_out:
-            left_running = not await _stop_process_tree(proc)
+        r = await run_process(_shell_argv(cmd), timeout=timeout, cwd=cwd, env=full_env)
+        stdout_b, stderr_b, left_running = r.stdout, r.stderr, r.left_running
+        if r.timed_out:
             return {
                 **({"left_running": True} if left_running else {}),
                 "stdout": stdout_b.decode(errors="replace").strip(),
@@ -442,7 +488,7 @@ async def run_shell_split(
             "stdout": stdout_b.decode(errors="replace"),
             "stderr": stderr_b.decode(errors="replace"),
             "duration": round(time.time() - start, 2),
-            "returncode": proc.returncode,
+            "returncode": r.returncode,
         }
 
     except Exception as exc:  # noqa: BLE001
