@@ -672,6 +672,25 @@ def _do_restore(spec: EditSpec) -> EditResult:
 
 
 def apply_edit(spec: EditSpec) -> EditResult:
+    """Apply an edit (or restore); see _apply_edit. A create that fails leaves no
+    file behind: the empty target made to read from is removed again (Jan's audit
+    #10: a create with invalid JSON left a zero-byte file)."""
+    target = Path(spec.path)
+    creating = bool(spec.create) and not spec.dry_run and not spec.restore and not (
+        target.exists() or target.is_symlink())
+    try:
+        return _apply_edit(spec)
+    except BaseException:
+        if creating:
+            try:
+                if target.is_file() and not target.is_symlink() and target.stat().st_size == 0:
+                    target.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _apply_edit(spec: EditSpec) -> EditResult:
     """Apply an edit (or restore) atomically. Pure-ish: the only side
     effects are the temp file and the final os.replace. A dry run has none
     in the target's directory: its temp file lives in a private scratch dir.

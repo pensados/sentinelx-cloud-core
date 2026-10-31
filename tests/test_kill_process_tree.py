@@ -80,10 +80,14 @@ def test_the_elevated_path_uses_the_group_separator(monkeypatch):
     try:
         S._kill_process_tree(proc, elevated=True)
         assert seen, "an elevated tree must be killed through sudo"
-        argv = seen[0]
-        assert argv[:2] == ["sudo", "-n"]
-        assert "--" in argv, "without -- the pgid is read as an option"
-        assert argv[argv.index("--") + 1].startswith("-"), "the group is negative"
+        # Since 0.23.38 the descendants found in /proc are killed first, in their own
+        # sudo kill, when the tree already has children: look for the group kill
+        # among the calls rather than assuming it is the first one.
+        for argv in seen:
+            assert argv[:2] == ["sudo", "-n"]
+            assert "--" in argv, "without -- a pid or pgid can be read as an option"
+        group = [a for a in seen if a[a.index("--") + 1].startswith("-")]
+        assert group, "the process group must be killed (a negative pgid after --)"
     finally:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)

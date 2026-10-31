@@ -3,6 +3,24 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.43 - Failure-atomic move, copy, uploads and creates - 2026-10-31
+
+From Jan's audit of 2026-10-31 (items 10-13, 18): operations that destroyed or replaced first and found out
+afterwards whether they could finish.
+
+- move/copy with overwrite=true (#11, #12): the new content is staged beside the destination; the old one is
+  renamed aside and removed only once the new one is in place, or put back if anything fails. A same-filesystem
+  move is one atomic rename. Across filesystems, a source file that can't be removed undoes the move; a source
+  directory removed part way keeps the complete destination and raises partial_move.
+- upload_file and chunked completion with overwrite=false (#13): the final step is a hard link, which fails
+  atomically if the destination appeared meanwhile (conflict); without hard links, the check is repeated last.
+- chunked uploads (#18): chunks must be 0..N-1 with none missing (incomplete_upload); upload_init with a reused
+  upload_id starts a fresh session instead of keeping stale parts.
+- sentinel_edit(create=true) (#10): a create that fails removes the empty file it made.
+- tests/test_failure_atomic_ops.py: Jan's reproductions. 6 sabotages caught. test_kill_process_tree no longer
+  assumes the group kill is the first sudo call (0.23.38 kills /proc descendants first when there are any;
+  that made it fail intermittently). Suite passes on 3.12 and 3.14.
+
 ## 0.23.42 - Follow-ups: secret edits refused without a backup, raw failures keep paths, kill_pids, byte cap - 2026-10-31
 
 Jan's follow-ups on tonight's fixes.

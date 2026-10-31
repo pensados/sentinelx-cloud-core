@@ -149,7 +149,45 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> None:
             )
 
 
-def _finalize(tmp: Path, dest: Path) -> None:
+def _finalize_no_clobber(tmp: Path, dest: Path) -> None:
+    """Put tmp at dest only if nothing is there, atomically.
+
+    overwrite=false used to be a check at the start of the request followed by an
+    unconditional replace at the end, so a file created in between was overwritten
+    (Jan's audit #13). A hard link fails with EEXIST instead. Where hard links aren't
+    available (some FUSE, SMB or FAT mounts) the check is repeated as late as possible.
+    """
+    part = None
+    try:
+        try:
+            os.link(tmp, dest)
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            if exc.errno == errno.EXDEV:
+                part = dest.parent / f".{dest.name}.sentinelx-{uuid.uuid4().hex[:8]}.part"
+                shutil.copyfile(tmp, part)
+                with open(part, "r+b") as fh:
+                    os.fsync(fh.fileno())
+                os.link(part, dest)
+            else:
+                if dest.exists():
+                    raise FileExistsError(errno.EEXIST, "exists", str(dest)) from exc
+                os.replace(tmp, dest)
+                return
+    except FileExistsError as exc:
+        raise HandlerError(
+            "conflict",
+            f"a file appeared at {dest} while this upload was in progress; it was left as it "
+            "is (overwrite=false). Pass overwrite=true to replace it.",
+        ) from exc
+    finally:
+        if part is not None:
+            part.unlink(missing_ok=True)
+    tmp.unlink(missing_ok=True)
+
+
+def _finalize(tmp: Path, dest: Path, *, overwrite: bool = True) -> None:
     """Move a finished file into place, atomically, across filesystems too.
 
     A rename can't cross filesystems, and the staging area (under upload_base)
@@ -160,6 +198,9 @@ def _finalize(tmp: Path, dest: Path) -> None:
     temp file in the destination's own directory and rename THAT, so the final
     name never points at a half-written file. Any other error is raised as is.
     """
+    if not overwrite:
+        _finalize_no_clobber(tmp, dest)
+        return
     try:
         tmp.replace(dest)
         return
@@ -386,7 +427,7 @@ def make_upload_file_handler(policy: Policy, upload_base: Path):
                     trusted_hosts=policy.trusted_fetch_hosts,
                     timeout=policy.file_url_timeout_seconds,
                 )
-            _finalize(tmp, dest)
+            _finalize(tmp, dest, overwrite=overwrite)
         finally:
             if tmp.exists():
                 try:
@@ -460,7 +501,11 @@ def make_upload_init_handler(upload_base: Path, policy: Policy | None = None):
         upload_id = _validated_upload_id(payload.get("upload_id"))
         tmp_root = upload_base / ".sentinelx_uploads"
         upload_dir = tmp_root / upload_id
-        _parts_dir(upload_dir)
+        # A reused upload_id starts a fresh session: parts left by an earlier transfer
+        # with the same id were otherwise appended to this one (Jan's audit #18).
+        for stale in _parts_dir(upload_dir).glob("*.part"):
+            stale.unlink(missing_ok=True)
+        (upload_dir / "assembled.bin").unlink(missing_ok=True)
 
         meta = {
             "upload_id": upload_id,
@@ -551,6 +596,19 @@ def make_upload_complete_handler(upload_base: Path, policy: "Policy | None" = No
         parts = sorted((upload_dir / "parts").glob("*.part"))
         if not parts:
             raise HandlerError("invalid_state", "no chunks uploaded")
+        # The chunks must be 0..N-1 with none missing: sorting whatever .part files
+        # existed accepted 0 and 2 as a complete upload (Jan's audit #18).
+        try:
+            indexes = [int(p.stem) for p in parts]
+        except ValueError:
+            raise HandlerError("invalid_state", "unexpected files among the upload's chunks") from None
+        if indexes != list(range(len(indexes))):
+            missing = sorted(set(range(max(indexes) + 1)) - set(indexes))
+            raise HandlerError(
+                "incomplete_upload",
+                f"chunks must be numbered 0..N-1 with none missing; missing: {missing[:20]}",
+                {"received": len(indexes), "missing": missing[:100]},
+            )
 
         # Reassemble while hashing
         tmp = upload_dir / "assembled.bin"
@@ -628,7 +686,7 @@ def make_upload_complete_handler(upload_base: Path, policy: "Policy | None" = No
                 "replace it.",
             )
 
-        _finalize(tmp, dest)
+        _finalize(tmp, dest, overwrite=bool(meta.get("overwrite", True)))
         shutil.rmtree(upload_dir, ignore_errors=True)
 
         return {

@@ -64,6 +64,7 @@ chmod_failed / chown_failed.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -189,6 +190,140 @@ def _dir_backup_targz(src: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+
+# move/copy with overwrite=true used to delete the destination first and only then
+# find out whether the operation could finish: a failed copy of a directory left
+# half the new tree and none of the old one; a move that couldn't remove its source
+# had already replaced the destination (Jan's audit #11, #12, 2026-10-31). Now the
+# new content is staged beside the destination, the old one is renamed aside, and it
+# is only removed once the new one is in place, or put back if anything fails.
+def _sibling(path: Path, tag: str) -> Path:
+    return path.with_name(f".{path.name}.sentinelx-{tag}-{os.urandom(4).hex()}")
+
+
+def _exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _remove_tree(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif _exists(path):
+        path.unlink()
+
+
+def _discard(path: Path) -> None:
+    try:
+        _remove_tree(path)
+    except OSError:
+        pass
+
+
+def _same_filesystem(src: Path, dst: Path) -> bool:
+    try:
+        return os.lstat(src).st_dev == os.stat(dst.parent).st_dev
+    except OSError:
+        return False
+
+
+def _put_in_place(staged: Path, dst: Path, *, replace: bool) -> None:
+    """Rename staged (beside dst, so atomic) to dst; an old dst waits aside until then."""
+    old = None
+    if _exists(dst):
+        if not replace:
+            raise FileExistsError(errno.EEXIST, "the destination appeared meanwhile", str(dst))
+        old = _sibling(dst, "old")
+        os.rename(dst, old)
+    try:
+        os.rename(staged, dst)
+    except BaseException:
+        if old is not None:
+            os.rename(old, dst)
+        raise
+    if old is not None:
+        _discard(old)
+
+
+def _copy_failure_atomic(src: Path, dst: Path, *, replace: bool, symlinks: bool = False) -> str:
+    staged = _sibling(dst, "new")
+    try:
+        if src.is_dir() and not src.is_symlink():
+            shutil.copytree(src, staged, symlinks=symlinks)
+            kind = "dir"
+        elif symlinks and src.is_symlink():
+            os.symlink(os.readlink(src), staged)
+            kind = "symlink"
+        else:
+            shutil.copy2(src, staged)
+            kind = "file"
+        _put_in_place(staged, dst, replace=replace)
+    except BaseException:
+        _discard(staged)
+        raise
+    return kind
+
+
+def _move_failure_atomic(src: Path, dst: Path, *, replace: bool) -> None:
+    if _same_filesystem(src, dst):
+        # A rename is atomic; keep the old destination aside until it has happened.
+        old = None
+        if _exists(dst):
+            if not replace:
+                raise FileExistsError(errno.EEXIST, "the destination appeared meanwhile", str(dst))
+            old = _sibling(dst, "old")
+            os.rename(dst, old)
+        try:
+            os.rename(src, dst)
+        except BaseException:
+            if old is not None:
+                os.rename(old, dst)
+            raise
+        if old is not None:
+            _discard(old)
+        return
+    # Across filesystems: copy beside the destination, put it in place, then remove
+    # the source. The old destination waits aside until the source is gone.
+    staged = _sibling(dst, "new")
+    old = None
+    try:
+        if src.is_dir() and not src.is_symlink():
+            shutil.copytree(src, staged, symlinks=True)
+        elif src.is_symlink():
+            os.symlink(os.readlink(src), staged)
+        else:
+            shutil.copy2(src, staged)
+        if _exists(dst):
+            if not replace:
+                raise FileExistsError(errno.EEXIST, "the destination appeared meanwhile", str(dst))
+            old = _sibling(dst, "old")
+            os.rename(dst, old)
+        os.rename(staged, dst)
+    except BaseException:
+        _discard(staged)
+        if old is not None:
+            os.rename(old, dst)
+        raise
+    try:
+        _remove_tree(src)
+    except OSError as exc:
+        if not (src.is_dir() and not src.is_symlink()):
+            # A file isn't half-removed: undo the whole move.
+            _discard(dst)
+            if old is not None:
+                os.rename(old, dst)
+            raise
+        # A directory removed part way: the destination is complete, keep it and say so.
+        if old is not None:
+            _discard(old)
+        raise HandlerError(
+            "partial_move",
+            f"{src} was copied to {dst} in full, but removing the source failed part way "
+            f"({exc}); the destination is complete and part of the source is left behind",
+            {"src": str(src), "dst": str(dst)},
+        ) from exc
+    if old is not None:
+        _discard(old)
+
 def make_move_handler(policy: Policy):
     async def handle_move(payload: dict[str, Any]) -> dict[str, Any]:
         """Move/rename a file or directory.
@@ -216,12 +351,7 @@ def make_move_handler(policy: Policy):
             )
 
         try:
-            if dst.exists() and overwrite:
-                if dst.is_dir() and not dst.is_symlink():
-                    shutil.rmtree(dst)
-                else:
-                    dst.unlink()
-            shutil.move(str(src), str(dst))
+            _move_failure_atomic(src, dst, replace=overwrite)
         except PermissionError as exc:
             raise HandlerError(
                 "permission_denied",
@@ -285,16 +415,7 @@ def make_copy_handler(policy: Policy):
             )
 
         try:
-            if src.is_dir() and not src.is_symlink():
-                if dst.exists() and overwrite:
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
-                kind = "dir"
-            else:
-                if dst.exists() and overwrite and dst.is_dir():
-                    shutil.rmtree(dst)
-                shutil.copy2(src, dst)
-                kind = "file"
+            kind = _copy_failure_atomic(src, dst, replace=overwrite)
         except PermissionError as exc:
             raise HandlerError(
                 "permission_denied",
