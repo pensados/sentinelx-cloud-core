@@ -3,6 +3,24 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.48 - file_url: connect to the validated address; cancelling stops the fetch - 2026-10-31
+
+From Jan's audit of 2026-10-31 (#14, #15).
+
+- SSRF (#14): _validate_fetch_url returns the addresses it validated, and the fetch connects to those
+  (an HTTPSConnection pinned to the IP, certificate still verified against the hostname, Host header
+  unchanged). urllib looked the name up again, so a DNS server answering differently the second time
+  passed validation. Redirects are still not followed. Through an HTTPS proxy (HTTPS_PROXY, as urllib
+  honoured) the proxy resolves the name, as before.
+- Cancellation (#15): the worker thread is told to stop, its socket is shut down from outside, it is given
+  up to 5 s, and the partial file is removed. The TLS handshake runs after the SSL socket is visible
+  (do_handshake_on_connect=False), so a cancel also wakes a handshake that is stuck. Before, cancelling
+  abandoned the thread and it kept downloading.
+- tests/test_file_url_fetch.py: DNS rebinding (the validated address is the one dialled, one lookup) and a
+  cancel during a stuck TLS handshake. 2 sabotages caught; the test found twice that the handshake phase
+  wasn't covered before the final version. A real fetch from GitHub (TLS, SNI, certificate) matches urllib
+  byte for byte. Suite passes on 3.12 and 3.14.
+
 ## 0.23.47 - script_run uses run_process; one tree kill for the whole agent - 2026-10-31
 
 Stage 3, the last, of the process-lifecycle unification: every child the agent starts now goes through

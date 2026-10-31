@@ -23,13 +23,16 @@ import asyncio
 import base64
 import errno
 import hashlib
-import os
+import http.client
 import ipaddress
 import json
+import os
 import pathlib
 import re
 import shutil
 import socket
+import ssl
+import threading
 import urllib.error
 import urllib.request
 import uuid
@@ -37,9 +40,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from sentinelx_core.executor import HandlerError
 from sentinelx_core import platform_guidance as _pg
-from sentinelx_core.executor_engine import safe_path_under
+from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import finish_cleanup, safe_path_under
 from sentinelx_core.policy import Policy
 
 # 10 GiB hard ceiling, mirrors legacy SENTINEL_MAX_UPLOAD_BYTES default
@@ -48,18 +51,6 @@ CHUNK_READ_SIZE = 1024 * 1024  # 1 MiB
 
 
 # ── SSRF defense ───────────────────────────────────────────────────────────
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Reject redirects so an attacker can't bounce a vetted URL into a
-    rogue one (server returns 302 Location: http://169.254.169.254/...)."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
-        raise urllib.error.HTTPError(
-            req.full_url, code,
-            f"redirect to {newurl} blocked (file_url does not follow redirects)",
-            headers, fp,
-        )
 
 
 def _is_safe_ip(ip: str) -> bool:
@@ -85,7 +76,7 @@ def _is_safe_ip(ip: str) -> bool:
     )
 
 
-def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> None:
+def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> list[str]:
     """Raise HandlerError unless `url` is safe to fetch.
 
     Layered checks (any one failure rejects):
@@ -95,11 +86,9 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> None:
          _is_safe_ip(). This catches DNS rebinding where the host is
          in the allowlist but resolves to a private IP.
 
-    Note: this is TOCTOU-safe only for non-TOCTOU attackers — a
-    pathological DNS server could return different IPs on the
-    validation lookup vs urllib's lookup. In practice this is rare
-    and would require also being in trusted_hosts, which already
-    requires operator opt-in.
+    Returns the validated addresses. The fetch connects to those, not to a
+    second lookup: urllib resolved the name again, so a DNS server answering
+    differently the second time passed validation (Jan's audit #14).
     """
     parsed = urlparse(url)
     scheme = (parsed.scheme or "").lower()
@@ -136,8 +125,11 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> None:
     except socket.gaierror as exc:
         raise HandlerError("fetch_failed", f"DNS resolution failed: {exc}") from exc
 
+    addresses: list[str] = []
     for info in infos:
         ip = info[4][0]
+        if ip not in addresses:
+            addresses.append(ip)
         if not _is_safe_ip(ip):
             raise HandlerError(
                 "fetch_blocked",
@@ -147,6 +139,7 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> None:
                 "file, use content_base64 or the chunked upload path "
                 "instead.",
             )
+    return addresses
 
 
 def _finalize_no_clobber(tmp: Path, dest: Path) -> None:
@@ -268,6 +261,60 @@ def write_transfer_part(upload_base: Path, upload_id: str, index: int, data: byt
     return len(data)
 
 
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to `host`, connected to `ip`, an address _validate_fetch_url already
+    vetted. The certificate is still checked against the hostname (SNI and
+    check_hostname), and the Host header still names it."""
+
+    def __init__(self, host: str, port: int, ip: str, *, timeout: float) -> None:
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self._pinned_ip = ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        # The handshake runs after self.sock is set, so a cancel can shut the socket
+        # down while the handshake is blocked. wrap_socket would otherwise handshake
+        # before returning, and the raw socket it detaches can't be used to wake it.
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host,
+                                              do_handshake_on_connect=False)
+        self.sock.do_handshake()
+
+
+def _fetch_connection(host: str, port: int, ip: str, timeout: float) -> http.client.HTTPSConnection:
+    """The pinned connection, or a CONNECT tunnel when an HTTPS proxy applies to the
+    host (urllib honoured HTTPS_PROXY; the proxy resolves the name there, as before)."""
+    proxy = urllib.request.getproxies().get("https")
+    if proxy and not urllib.request.proxy_bypass(host):
+        pu = urlparse(proxy if "://" in proxy else f"http://{proxy}")
+        conn = http.client.HTTPSConnection(pu.hostname, pu.port or 8080, timeout=timeout,
+                                           context=ssl.create_default_context())
+        conn.set_tunnel(host, port)
+        return conn
+    return _PinnedHTTPSConnection(host, port, ip, timeout=timeout)
+
+
+def _shut(conn: http.client.HTTPConnection) -> None:
+    """Wake a worker blocked on this connection: shutdown, then close."""
+    sock = getattr(conn, "sock", None)
+    if sock is not None:
+        try:
+            # The base class's shutdown: SSLSocket.shutdown would also drop the SSL
+            # object the worker thread is still inside.
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+        except OSError:
+            pass
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _settle(fut: "asyncio.Future", grace: float) -> None:
+    await asyncio.wait({fut}, timeout=grace)
+    if fut.done() and not fut.cancelled():
+        fut.exception()   # retrieved: the worker stopping here is expected
+
+
 async def _fetch_url(
     url: str,
     dest: Path,
@@ -277,39 +324,95 @@ async def _fetch_url(
 ) -> tuple[int, str]:
     """Download a URL into `dest`. Returns (size, sha256_hex).
 
-    Validates against SSRF before the fetch (see _validate_fetch_url)
-    and disables redirects so a vetted host can't bounce us elsewhere.
+    SSRF: validated first (see _validate_fetch_url), then the connection goes to an
+    address that was validated, never to a second lookup (Jan's audit #14). TLS is
+    still verified against the hostname. Redirects are not followed, so a vetted
+    host can't bounce us elsewhere.
+
+    Cancellation stops the transfer: the blocking I/O runs in a thread, so the
+    thread is told to stop, its socket is shut down from here (which wakes a
+    blocked read), it is given a moment to finish, and the partial file is removed.
+    Before, cancelling only abandoned the thread and it kept downloading (#15).
     """
-    _validate_fetch_url(url, trusted_hosts)
+    addresses = _validate_fetch_url(url, trusted_hosts)
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or 443
+    target = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+    stop = threading.Event()
+    live: list[http.client.HTTPSConnection] = []
+
+    def _cancelled() -> HandlerError:
+        return HandlerError("cancelled", "the fetch was cancelled")
 
     def _do_fetch() -> tuple[int, str]:
-        # Build an opener with NoRedirectHandler so urllib won't auto-
-        # follow Location headers — we re-validate any redirect target.
-        opener = urllib.request.build_opener(_NoRedirectHandler())
-        hasher = hashlib.sha256()
-        size = 0
-        try:
-            with opener.open(url, timeout=timeout) as r, dest.open("wb") as f:
-                while True:
-                    block = r.read(CHUNK_READ_SIZE)
-                    if not block:
-                        break
-                    size += len(block)
-                    if size > MAX_UPLOAD_BYTES:
-                        raise HandlerError(
-                            "file_too_large",
-                            f"file exceeds the agent's upload cap of "
-                            f"{MAX_UPLOAD_BYTES} bytes. Split it into smaller "
-                            "pieces or compress it; chunked upload has the "
-                            "same limit.",
-                        )
-                    hasher.update(block)
-                    f.write(block)
-        except urllib.error.URLError as exc:
-            raise HandlerError("fetch_failed", f"could not fetch URL: {exc}") from exc
-        return size, hasher.hexdigest()
+        last: BaseException | None = None
+        for ip in addresses:
+            if stop.is_set():
+                raise _cancelled()
+            conn = _fetch_connection(host, port, ip, timeout)
+            live.append(conn)
+            try:
+                conn.request("GET", target, headers={"User-Agent": "sentinelx-agent",
+                                                     "Accept-Encoding": "identity"})
+                resp = conn.getresponse()
+            except (OSError, http.client.HTTPException) as exc:
+                last = exc
+                conn.close()
+                if stop.is_set():
+                    raise _cancelled() from exc
+                continue
+            try:
+                if 300 <= resp.status < 400:
+                    raise HandlerError(
+                        "fetch_failed",
+                        f"could not fetch URL: HTTP {resp.status}: redirect to "
+                        f"{resp.getheader('Location')} blocked (file_url does not follow redirects)",
+                    )
+                if resp.status != 200:
+                    raise HandlerError("fetch_failed",
+                                       f"could not fetch URL: HTTP {resp.status} {resp.reason}")
+                hasher = hashlib.sha256()
+                size = 0
+                with dest.open("wb") as f:
+                    while True:
+                        if stop.is_set():
+                            raise _cancelled()
+                        block = resp.read(CHUNK_READ_SIZE)
+                        if not block:
+                            break
+                        size += len(block)
+                        if size > MAX_UPLOAD_BYTES:
+                            raise HandlerError(
+                                "file_too_large",
+                                f"file exceeds the agent's upload cap of "
+                                f"{MAX_UPLOAD_BYTES} bytes. Split it into smaller "
+                                "pieces or compress it; chunked upload has the "
+                                "same limit.",
+                            )
+                        hasher.update(block)
+                        f.write(block)
+                return size, hasher.hexdigest()
+            except (OSError, http.client.HTTPException) as exc:
+                if stop.is_set():
+                    raise _cancelled() from exc
+                raise HandlerError("fetch_failed", f"could not fetch URL: {exc}") from exc
+            finally:
+                conn.close()
+            if getattr(conn, "_tunnel_host", None):
+                break   # through a proxy the address list is meaningless
+        raise HandlerError("fetch_failed", f"could not fetch URL: {last}")
 
-    return await asyncio.to_thread(_do_fetch)
+    fut = asyncio.ensure_future(asyncio.to_thread(_do_fetch))
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        stop.set()
+        for conn in list(live):
+            _shut(conn)
+        await finish_cleanup(_settle(fut, 5.0))
+        dest.unlink(missing_ok=True)
+        raise
 
 
 def _decode_base64_to(content_b64: str, dest: Path) -> tuple[int, str]:
