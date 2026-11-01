@@ -3,6 +3,12 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.56 - Protocol 1.13.5 - 2026-11-01
+
+- Protocol 1.13.5 (sx-review on 1.13.4): a huge error.details no longer makes bound_response drop the
+  result of an executed operation (details is capped before the result is trimmed), and error.code is cut
+  to its schema maximum on every response.
+
 ## 0.23.55 - Protocol 1.13.4; finding of sx-review on 0.23.54 - 2026-11-01
 
 - Protocol 1.13.4 (sxrep_TRP3VXQ98XNC, reopened): bound_response also bounds error.details and
