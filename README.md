@@ -344,8 +344,9 @@ residual risk are documented in [`THREAT_MODEL.md`](./THREAT_MODEL.md)
   check, so neither path traversal nor a symlink pointing outside the
   allowlist can escape it. Empty allowlist = the primitives are disabled.
   Writing ops that overwrite or delete an existing target back it up first
-  (timestamped `.bak`). `sentinel_edit` with `sudo=true` is a documented
-  exception to the `rw` check — see `THREAT_MODEL.md` §4.2.1.
+  (timestamped `.bak`). `sudo=true` on `sentinel_edit` does not lift the `rw`
+  check: it only changes which user performs a write the policy already
+  allows — see `THREAT_MODEL.md` §4.2.1.
 - **Unprivileged user with passwordless sudo.** The agent runs as `sentinelx`,
   not as root. By default the installer grants `sentinelx` passwordless sudo
   so it can manage services and edit system files — but it can still only
