@@ -16,11 +16,10 @@ import re
 import sys
 from typing import Any
 
-from sentinelx_core.executor import HandlerError
 from sentinelx_core import platform_guidance as _pg
+from sentinelx_core.executor import HandlerError
 from sentinelx_core.executor_engine import run_shell_split
 from sentinelx_core.policy import Policy
-
 
 # systemctl actions that only read state. Verified on a real host as the agent's
 # own unprivileged user: status, is-active and is-enabled all return 0, while

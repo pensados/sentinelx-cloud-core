@@ -23,7 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from sentinelx_core.handlers import build_registry, script as script_mod
+from sentinelx_core.handlers import build_registry
+from sentinelx_core.handlers import script as script_mod
 from sentinelx_core.policy import Policy
 
 UNICODE_SAMPLE = "Ľubomír ñandú — 🚀"

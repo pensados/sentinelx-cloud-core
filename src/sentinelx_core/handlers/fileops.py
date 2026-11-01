@@ -82,22 +82,21 @@ shape — only the thread it runs on differs.
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import codecs
+import errno
 import fnmatch
 import functools
-import errno
 import os
 import re
 import stat
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from sentinelx_core.executor import HandlerError
 from sentinelx_core import platform_guidance as _pg
+from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
-
 
 # Directories we always skip during recursive list/search, regardless of
 # show_hidden. These contain build artifacts, VCS internals, or

@@ -6,9 +6,9 @@ import asyncio
 import gc
 import json
 import unittest
-from unittest import mock
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import AsyncMock, Mock, patch
 
 from sentinelx_protocol import HEARTBEAT_INTERVAL_SECONDS, MAX_BINARY_FRAME_BYTES, WelcomeMessage

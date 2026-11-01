@@ -9,7 +9,6 @@ read-only filters after a pipe, here-doc data and arithmetic keep working.
 
 from __future__ import annotations
 
-
 import pytest
 
 from sentinelx_core.policy import Policy

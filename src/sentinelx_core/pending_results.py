@@ -23,13 +23,12 @@ much larger change.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterator
-
-import logging
 
 logger = logging.getLogger(__name__)
 

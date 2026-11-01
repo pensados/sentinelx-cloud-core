@@ -14,7 +14,11 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from sentinelx_core import platform_guidance as _pg
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import run_shell
+from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
+from sentinelx_core.policy import Policy
 from sentinelx_core.segment_check import (
     UnparseableCommand,
     control_character,
@@ -24,11 +28,6 @@ from sentinelx_core.segment_check import (
     unauthorised_segment,
 )
 from sentinelx_core.segment_check import first_word as first_word_of
-from sentinelx_core.executor_engine import run_shell
-from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
-from sentinelx_core.policy import Policy
-from sentinelx_core import platform_guidance as _pg
-
 
 # bash control-flow keywords. When a command starts with one of these,
 # "first word" doesn't identify the program being run — it identifies a

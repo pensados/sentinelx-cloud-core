@@ -9,14 +9,12 @@ had no way to say so.
 
 from __future__ import annotations
 
-
 from sentinelx_core.client import (
     BACKOFF_SCHEDULE,
     MAX_RETRY_AFTER_SECONDS,
     apply_jitter,
     parse_retry_after,
 )
-
 
 # --- the curve -------------------------------------------------------------
 

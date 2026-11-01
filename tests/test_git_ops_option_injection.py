@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from sentinelx_core.handlers import git_ops as g
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.handlers import git_ops as g
 
 
 @pytest.mark.parametrize("payload", [

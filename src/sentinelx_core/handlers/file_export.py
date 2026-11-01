@@ -34,9 +34,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sentinelx_protocol import TRANSFER_CHUNK_BYTES
+
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
-from sentinelx_protocol import TRANSFER_CHUNK_BYTES
 
 _SESSION_TTL_SECONDS = 3600
 

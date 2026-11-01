@@ -47,8 +47,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sentinelx_core.executor_engine import run_process, timeout_text
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import run_process, timeout_text
 from sentinelx_core.policy import Policy
 from sentinelx_core.staging import staging_root
 

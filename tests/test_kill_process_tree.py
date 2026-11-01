@@ -27,7 +27,6 @@ import pytest
 from sentinelx_core import executor_engine as EE
 from sentinelx_core.handlers import script as S
 
-
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX behaviour")
 
 

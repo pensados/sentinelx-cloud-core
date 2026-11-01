@@ -14,7 +14,6 @@ both of which are plain path logic.
 
 from __future__ import annotations
 
-
 import pytest
 
 from sentinelx_core import executor_engine as ee

@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from sentinelx_core.identity import Identity
 from sentinelx_core import rotation
+from sentinelx_core.identity import Identity
 
 
 def _tok(exp_offset_s, iat_offset_s=None, host_id="h1"):

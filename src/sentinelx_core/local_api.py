@@ -31,8 +31,9 @@ import json
 import logging
 import os
 import sys
-from uuid import uuid4
 from typing import Any
+from uuid import uuid4
+
 from sentinelx_core.executor_engine import run_process
 from sentinelx_core.winspawn import spawn_kwargs
 

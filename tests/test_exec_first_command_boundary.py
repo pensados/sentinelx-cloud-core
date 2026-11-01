@@ -15,6 +15,7 @@ import pytest
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
 
+
 @pytest.fixture(autouse=True)
 def _without_allowlist_prelude(monkeypatch):
     # These tests pin what the chain gate lets through and what reaches run_shell.

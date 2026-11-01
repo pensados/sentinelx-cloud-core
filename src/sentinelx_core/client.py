@@ -6,18 +6,17 @@ ping/pong heartbeat, dispatching incoming requests to the executor.
 
 from __future__ import annotations
 
-from sentinelx_core.huburl import hub_bases
 import asyncio
 import json
 import logging
-import time
-import random
 import os
 import platform
+import random
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,12 +40,11 @@ from sentinelx_protocol import (
 )
 from websockets.exceptions import ConnectionClosed
 
-from sentinelx_core import AGENT_VERSION
+from sentinelx_core import AGENT_VERSION, pending_results
 from sentinelx_core.executor import Executor
+from sentinelx_core.huburl import hub_bases
 from sentinelx_core.identity import Identity
 from sentinelx_core.jobs import build_completed_event_data
-
-from sentinelx_core import pending_results
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,6 @@ Source: /home/carlos/projects/sentinelx/agent.py (legacy SentinelX 0.3.5)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import asyncio
 import logging
 import os
@@ -17,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +91,7 @@ def kill_pids(pids: list[int], *, elevated: bool = False) -> bool:
     return ok
 
 
-async def finish_cleanup(coro) -> None:
+async def finish_cleanup(coro) -> Any:
     """Run a cleanup coroutine to the end even if the caller is cancelled again.
 
     A second task.cancel() used to interrupt the cleanup of the first: the call
@@ -104,7 +104,7 @@ async def finish_cleanup(coro) -> None:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             continue
-    task.result()
+    return task.result()
 
 
 def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = False) -> bool:
@@ -284,6 +284,19 @@ class ProcResult:
     left_running: bool = False
 
 
+def left_running_from(exc: BaseException | None) -> bool:
+    """True when a cancellation behind exc passed through run_process and something it
+    started outlived the kill. asyncio.wait_for raises TimeoutError from the cancel, so
+    the chain is followed through __cause__ and __context__."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if getattr(exc, "sx_left_running", False):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 async def run_process(
     argv: list[str],
     *,
@@ -323,8 +336,12 @@ async def run_process(
     )
     try:
         out, err, timed_out = await communicate_partial(proc, timeout, input=input)
-    except asyncio.CancelledError:
-        await finish_cleanup(_stop_process_tree(proc, elevated=elevated))
+    except asyncio.CancelledError as exc:
+        if await finish_cleanup(_stop_process_tree(proc, elevated=elevated)) is False:
+            # Whoever turns this cancel into an answer (asyncio.wait_for raises TimeoutError
+            # from it) learns that something outlived the kill: see left_running_from
+            # (sx-review, 2026-11-01: total budgets answered without left_running).
+            exc.sx_left_running = True
         raise
     if timed_out:
         left_running = not await _stop_process_tree(proc, elevated=elevated)

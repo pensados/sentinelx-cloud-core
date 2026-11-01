@@ -45,13 +45,10 @@ real Windows PowerShell 5.1 host.
 from __future__ import annotations
 
 import asyncio
-
-from sentinelx_core.executor_engine import _kill_process_tree, run_process  # noqa: F401 (re-exported for tests)
-from sentinelx_core.executor_engine import timeout_text
 import logging
+import os
 import re
 import shlex
-import os
 import shutil
 import sys
 import time
@@ -60,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import _kill_process_tree, run_process, timeout_text  # noqa: F401 (re-exported for tests)
 from sentinelx_core.jobs import BACKGROUND_TIMEOUT_MAX
 from sentinelx_core.policy import Policy
 from sentinelx_core.staging import staging_root

@@ -15,7 +15,6 @@ import subprocess
 
 import pytest
 
-
 WRAP_MARKER = 'cd "$1"'
 
 

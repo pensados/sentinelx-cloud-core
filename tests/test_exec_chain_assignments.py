@@ -15,6 +15,7 @@ import pytest
 from sentinelx_core.policy import Policy
 from sentinelx_core.segment_check import UnparseableCommand, unauthorised_chain
 
+
 def _refused(command: str) -> bool:
     """Refused either way the exec handler refuses: an offending segment, or unparseable."""
     try:

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import dataclasses
 
-
 from sentinelx_core.handlers.basic import make_help_handler
 from sentinelx_core.policy import Policy
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import errno
 
-
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers.script import _staging_oserror
 

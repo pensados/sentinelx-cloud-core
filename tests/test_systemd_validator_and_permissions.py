@@ -14,11 +14,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from sentinelx_protocol import RequestMessage
 
 from sentinelx_core import executor as EX
 from sentinelx_core.executor import Executor
 from sentinelx_core.vendored.pensa_safe_edit import EditSpec, SafeEditError, apply_edit
-from sentinelx_protocol import RequestMessage
 
 needs_systemd = pytest.mark.skipif(shutil.which("systemd-analyze") is None,
                                    reason="systemd-analyze not installed")

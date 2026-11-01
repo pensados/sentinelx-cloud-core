@@ -13,7 +13,6 @@ and the agent runs as its own. stderr is what separates the two cases.
 
 from __future__ import annotations
 
-
 from sentinelx_core.handlers.git_ops import _dubious_ownership
 
 
@@ -54,6 +53,7 @@ def test_both_handlers_agree_on_the_signal():
     in both modules and found in only one.
     """
     import inspect
+
     from sentinelx_core.handlers import project_snapshot as ps
 
     src = inspect.getsource(ps)

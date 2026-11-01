@@ -17,7 +17,6 @@ import pytest
 
 from sentinelx_core.handlers.service import _build_systemctl
 
-
 READ_ONLY = ("status", "is-active", "is-enabled")
 MUTATING = ("start", "stop", "restart", "reload")
 

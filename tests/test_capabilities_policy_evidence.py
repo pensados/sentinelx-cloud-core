@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import dataclasses
 
-
 from sentinelx_core.handlers import build_registry
 from sentinelx_core.policy import Policy
 

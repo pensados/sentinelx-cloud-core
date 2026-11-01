@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
+from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers import build_registry
 from sentinelx_core.policy import Policy
-from sentinelx_core.executor import HandlerError
 
 PAYLOAD = b"abcdefghi"
 LOWER = hashlib.sha256(PAYLOAD).hexdigest()

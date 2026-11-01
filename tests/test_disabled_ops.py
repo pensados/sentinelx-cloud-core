@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 
-
 from sentinelx_core.handlers import UNDISABLEABLE_OPS, build_registry
 from sentinelx_core.policy import Policy
 
@@ -79,8 +78,9 @@ def test_capabilities_stops_advertising_a_disabled_op():
 
 async def test_dispatch_answers_unsupported_op_for_a_disabled_op(tmp_path):
     """And the other half: unreachable, not merely unadvertised."""
-    from sentinelx_core.executor import Executor
     from sentinelx_protocol import RequestMessage
+
+    from sentinelx_core.executor import Executor
 
     cfg = tmp_path / "config.yaml"
     cfg.write_text("allowed_commands: [echo]\ndisabled_ops: [script_run]\n")

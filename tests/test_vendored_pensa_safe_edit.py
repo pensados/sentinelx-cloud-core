@@ -32,7 +32,6 @@ from sentinelx_core.vendored.pensa_safe_edit import (
     main,
 )
 
-
 # --- 1. NO shell -------------------------------------------------------------
 
 

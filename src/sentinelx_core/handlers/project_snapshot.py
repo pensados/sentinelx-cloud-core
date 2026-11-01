@@ -22,8 +22,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from sentinelx_core.executor_engine import run_process
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import left_running_from, run_process
 from sentinelx_core.handlers.fileops import _require_str, _resolve_or_reject
 from sentinelx_core.policy import Policy
 
@@ -337,7 +337,7 @@ def make_project_snapshot_handler(policy: Policy):
 
         try:
             return await asyncio.wait_for(_work(), timeout=_TOTAL_TIMEOUT)
-        except asyncio.TimeoutError:
-            raise HandlerError("timeout", "project_snapshot exceeded its time budget")
+        except asyncio.TimeoutError as exc:
+            raise HandlerError("timeout", "project_snapshot exceeded its time budget", {"left_running": True} if left_running_from(exc) else None) from exc
 
     return handle

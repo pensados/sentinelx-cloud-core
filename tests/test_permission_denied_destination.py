@@ -13,10 +13,10 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from sentinelx_protocol import RequestMessage
 
 from sentinelx_core import executor as EX
 from sentinelx_core.executor import Executor
-from sentinelx_protocol import RequestMessage
 
 pytestmark = pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0,
                                 reason="needs POSIX permissions enforced (not root)")

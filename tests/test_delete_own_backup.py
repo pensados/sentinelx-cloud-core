@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from sentinelx_core.handlers.fsmutate import make_delete_handler, _is_own_backup
+from sentinelx_core.handlers.fsmutate import _is_own_backup, make_delete_handler
 from sentinelx_core.policy import Policy
 
 

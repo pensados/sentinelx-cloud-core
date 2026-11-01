@@ -19,6 +19,7 @@ from sentinelx_core.handlers import exec as exec_mod
 from sentinelx_core.handlers.exec import make_exec_handler
 from sentinelx_core.policy import Policy
 
+
 @pytest.fixture(autouse=True)
 def _without_allowlist_prelude(monkeypatch):
     # These tests pin what the chain gate lets through and what reaches run_shell.

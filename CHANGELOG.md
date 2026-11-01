@@ -3,6 +3,19 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.54 - Findings of sx-review on 0.23.53 - 2026-11-01
+
+- left_running through cancellations (property 5.7): when a cancel passes through run_process and the
+  kill does not reach everything, the cancel is marked, and left_running_from() reads it through the
+  TimeoutError that asyncio.wait_for raises from it (finish_cleanup now returns the cleanup's result).
+  The total budgets of project_snapshot, git diff and git apply_patch report details.left_running;
+  0.23.53 had covered only each git command's own timeout.
+- git clone: clone_timeout keeps left_running, and then no longer says dest is clean: a process of the
+  clone may still write to it.
+- file_url: the cancel check runs right after the TCP connect (through a proxy, before CONNECT is sent)
+  and again just before the TLS handshake, once self.sock is set, which closes the window between them.
+- tests/test_review_findings_1101b.py: 4 tests, 5 sabotages caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.53 - Findings of sx-review on 0.23.43-0.23.52 - 2026-11-01
 
 Found by the automated review (sx-review): six in a backtest of 0.23.43..0.23.51, five in its review

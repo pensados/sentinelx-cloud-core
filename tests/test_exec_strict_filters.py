@@ -11,9 +11,9 @@ import dataclasses
 
 import pytest
 
+from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers import exec as exec_mod
 from sentinelx_core.handlers.exec import make_exec_handler
-from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
 from sentinelx_core.segment_check import READ_ONLY_FILTERS, unauthorised_segment
 

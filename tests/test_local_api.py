@@ -280,9 +280,9 @@ async def test_losing_the_endpoint_ends_the_epoch(probe) -> None:
     # The case a naive cache gets wrong: the endpoint comes back as a different
     # version and inherits the old verdict.
     from sentinelx_core.local_api import (
+        LocalApiError,
         ensure_compatible,
         forget_compatibility,
-        LocalApiError,
     )
 
     ep = _FakeEndpoint(_EXACT_20, {"protocol": 20})

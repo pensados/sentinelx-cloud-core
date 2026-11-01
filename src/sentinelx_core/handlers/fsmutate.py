@@ -66,8 +66,8 @@ from __future__ import annotations
 
 import errno
 import json
-import re as _re
 import os
+import re as _re
 import shutil
 import sys
 import tarfile
@@ -86,8 +86,8 @@ except ModuleNotFoundError:  # Windows
     grp = None  # type: ignore[assignment]
     pwd = None  # type: ignore[assignment]
 
-from sentinelx_core.executor_engine import run_process
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import run_process
 from sentinelx_core.policy import Policy
 from sentinelx_core.vendored.pensa_safe_edit import make_backup
 

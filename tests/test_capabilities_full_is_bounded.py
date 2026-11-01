@@ -9,10 +9,11 @@ with the real handler and a large policy, then bounds it as the agent does.
 
 from __future__ import annotations
 
-from sentinelx_core.handlers import build_registry
-from sentinelx_core.policy import Policy
 from sentinelx_protocol.bounding import RESPONSE_SOFT_LIMIT_BYTES as SOFT
 from sentinelx_protocol.bounding import bound_response, serialized_size
+
+from sentinelx_core.handlers import build_registry
+from sentinelx_core.policy import Policy
 
 
 def _large_policy() -> Policy:

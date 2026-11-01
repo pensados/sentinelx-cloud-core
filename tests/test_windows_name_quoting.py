@@ -24,7 +24,6 @@ from sentinelx_core.handlers.service import (
     _ps_single,
 )
 
-
 # --- PowerShell quoting ----------------------------------------------------
 
 def test_a_plain_name_is_quoted():

@@ -20,8 +20,8 @@ in the same environment a user would get.
 from __future__ import annotations
 
 import pytest
-
 from sentinelx_protocol import RequestMessage
+
 from sentinelx_core.executor import Executor
 
 

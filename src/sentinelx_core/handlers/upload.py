@@ -286,6 +286,14 @@ def write_transfer_part(upload_base: Path, upload_id: str, index: int, data: byt
     return len(data)
 
 
+def _abort_if_cancelled(conn: http.client.HTTPSConnection, sock: socket.socket) -> None:
+    """Close sock and stop when the fetch was cancelled (conn.sx_stop, set by _do_fetch)."""
+    stop = getattr(conn, "sx_stop", None)
+    if stop is not None and stop.is_set():
+        sock.close()
+        raise ConnectionAbortedError("cancelled during the connect")
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS to `host`, connected to `ip`, an address _validate_fetch_url already
     vetted. The certificate is still checked against the hostname (SNI and
@@ -297,16 +305,16 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
-        if getattr(self, "sx_stop", None) is not None and self.sx_stop.is_set():
-            # Cancelled while the TCP connect was blocked, when no socket was there to
-            # shut: send nothing, not even the TLS hello (sx-review, 2026-11-01).
-            sock.close()
-            raise ConnectionAbortedError("cancelled during the connect")
+        # A cancel while the TCP connect was blocked had no socket to shut: send nothing
+        # (sx-review, 2026-11-01), and check again once self.sock is set, just before the
+        # handshake, so a cancel in between finds a socket to shut.
+        _abort_if_cancelled(self, sock)
         # The handshake runs after self.sock is set, so a cancel can shut the socket
         # down while the handshake is blocked. wrap_socket would otherwise handshake
         # before returning, and the raw socket it detaches can't be used to wake it.
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host,
                                               do_handshake_on_connect=False)
+        _abort_if_cancelled(self, self.sock)
         self.sock.do_handshake()
 
 
@@ -323,15 +331,13 @@ class _PinnedProxyHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         self.sock = socket.create_connection((self.host, self.port), self.timeout)
+        _abort_if_cancelled(self, self.sock)      # before CONNECT reaches the proxy
         self._tunnel()
-        if getattr(self, "sx_stop", None) is not None and self.sx_stop.is_set():
-            # Cancelled while the TCP connect was blocked, when no socket was there to
-            # shut: send nothing, not even the TLS hello (sx-review, 2026-11-01).
-            self.sock.close()
-            raise ConnectionAbortedError("cancelled during the connect")
+        _abort_if_cancelled(self, self.sock)
         # Handshake after self.sock is set, so a cancel can shut it down (see above).
         self.sock = self._context.wrap_socket(self.sock, server_hostname=self._sx_host,
                                               do_handshake_on_connect=False)
+        _abort_if_cancelled(self, self.sock)
         self.sock.do_handshake()
 
 

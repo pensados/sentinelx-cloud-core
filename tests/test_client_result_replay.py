@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-
 from sentinelx_core import pending_results as pr
 from sentinelx_core.client import HubClient
 

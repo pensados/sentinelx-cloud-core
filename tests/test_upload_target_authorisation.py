@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from sentinelx_core.handlers import upload as u
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.handlers import upload as u
 
 b64 = lambda b: base64.b64encode(b).decode()
 

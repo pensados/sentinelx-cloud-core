@@ -14,13 +14,14 @@ installing, turns that into an immediate answer.
 
 from __future__ import annotations
 
-from sentinelx_core.huburl import hub_bases
 import asyncio
 import json
 from dataclasses import dataclass
 
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidStatusCode
+
+from sentinelx_core.huburl import hub_bases
 
 # The hub accepts, then waits for our hello. If nothing arrives in this window,
 # the token was accepted -- a rejection is immediate, not slow.

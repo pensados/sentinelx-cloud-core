@@ -16,7 +16,6 @@ import json
 import time
 from pathlib import Path
 
-
 from sentinelx_core import pending_results as pr
 
 EVENT = {"kind": "job_completed", "data": {"job_id": "job_abc", "status": "failed"}}

@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from sentinelx_core.executor import HandlerError
 from sentinelx_core import executor_engine as EE
+from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers import script as S
 from sentinelx_core.policy import Policy
 

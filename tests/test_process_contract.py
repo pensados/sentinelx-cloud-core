@@ -91,6 +91,7 @@ async def _via_project_snapshot(script, timeout, input=None, *, tmp_path, monkey
 
 async def _via_local_api_relay(script, timeout, input=None, *, tmp_path, monkeypatch):
     import types
+
     from sentinelx_core import local_api as LA
     monkeypatch.setattr(LA, "_relay_command", lambda endpoint: ["bash", "-c", script])
     ep = types.SimpleNamespace(timeout_s=timeout - 5, name="contract", run_as="nobody", path="/x")

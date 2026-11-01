@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from sentinelx_core import local_audit
 from sentinelx_core import executor_engine as EE
+from sentinelx_core import local_audit
 from sentinelx_core.handlers import script as S
 from sentinelx_core.huburl import hub_bases
 from sentinelx_core.preflight import _ws_url

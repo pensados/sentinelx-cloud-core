@@ -31,8 +31,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from sentinelx_core.executor_engine import run_process
 from sentinelx_core.executor import HandlerError
+from sentinelx_core.executor_engine import left_running_from, run_process
 from sentinelx_core.handlers.fileops import _require_str, _resolve_or_reject
 from sentinelx_core.policy import Policy
 
@@ -458,8 +458,8 @@ async def _op_diff(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         return await asyncio.wait_for(_work(), timeout=_TOTAL_TIMEOUT)
-    except asyncio.TimeoutError:
-        raise HandlerError("timeout", "git diff exceeded its time budget")
+    except asyncio.TimeoutError as exc:
+        raise HandlerError("timeout", "git diff exceeded its time budget", {"left_running": True} if left_running_from(exc) else None) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -747,8 +747,8 @@ async def _op_apply_patch(policy: Policy, payload: dict[str, Any]) -> dict[str, 
 
     try:
         return await asyncio.wait_for(_work(), timeout=_TOTAL_TIMEOUT)
-    except asyncio.TimeoutError:
-        raise HandlerError("timeout", "git apply_patch exceeded its time budget")
+    except asyncio.TimeoutError as exc:
+        raise HandlerError("timeout", "git apply_patch exceeded its time budget", {"left_running": True} if left_running_from(exc) else None) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1002,11 +1002,18 @@ async def _op_clone(policy: Policy, payload: dict[str, Any]) -> dict[str, Any]:
                 "Note that path is not validated on that route, so check the "
                 "destination yourself."
             )
+        # Keep left_running, and don't call dest clean while a process of the clone may
+        # still write to it (sx-review, 2026-11-01).
+        still = bool((exc.details or {}).get("left_running"))
         raise HandlerError(
             "clone_timeout",
-            f"The clone did not finish within {_NET_TIMEOUT}s and the partial "
-            f"checkout was removed, so {dest!r} is clean for another attempt."
+            (f"The clone did not finish within {_NET_TIMEOUT}s, and a process it started "
+             f"outlived the kill and may still write to {dest!r}: check it before another "
+             f"attempt." if still else
+             f"The clone did not finish within {_NET_TIMEOUT}s and the partial "
+             f"checkout was removed, so {dest!r} is clean for another attempt.")
             + depth_hint,
+            {"left_running": True} if still else None,
         ) from exc
 
     if rc != 0:
