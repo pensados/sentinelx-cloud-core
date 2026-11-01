@@ -84,7 +84,7 @@ async def test_windows_keeps_only_the_whole_word_check(monkeypatch):
     monkeypatch.setattr(ex.sys, "platform", "win32")
     seen = {}
 
-    async def fake_run(cmd, timeout):
+    async def fake_run(cmd, timeout, **_kw):
         seen["cmd"] = cmd
         return {"output": "", "returncode": 0}
 

@@ -303,7 +303,9 @@ def make_exec_handler(policy: Policy):
 
         if sys.platform != "win32":
             command = ALLOWLIST_PRELUDE + command
-        return await run_shell(command, timeout=timeout)
+        # clean_startup: no login shell, no BASH_ENV/ENV, no exported functions. The
+        # prelude can only constrain what runs after it; startup files ran first.
+        return await run_shell(command, timeout=timeout, clean_startup=True)
 
     return handle_exec
 

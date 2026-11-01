@@ -107,7 +107,7 @@ async def finish_cleanup(coro) -> None:
     task.result()
 
 
-def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = False) -> None:
+def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = False) -> bool:
     """Kill a child and everything it started (best effort; see STOP_GRACE_SECONDS).
 
     One implementation for every caller since 0.23.47 (script_run had its own).
@@ -121,7 +121,9 @@ def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = Fal
       nothing. The `--` separator is what makes it a process group;
     - a failed taskkill or sudo kill falls back to proc.kill() (sxrep_AZ931A9557MC).
     """
-    kill_pids(descendants(proc.pid), elevated=elevated)   # those that left the group
+    # Those that left the group. Whether they were all reached is part of the answer:
+    # a group kill that succeeds says nothing about them (sxrep_AZ931A9557MC).
+    reached = kill_pids(descendants(proc.pid), elevated=elevated)
     if sys.platform == "win32":
         try:
             # spawn_kwargs adds CREATE_NO_WINDOW, like every other child we
@@ -131,7 +133,7 @@ def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = Fal
                 **spawn_kwargs(capture_output=True, timeout=10, check=False),
             )
             if completed.returncode == 0:
-                return
+                return reached
             logger.warning("taskkill exited %s; falling back to kill()", completed.returncode)
         except (OSError, subprocess.SubprocessError):
             logger.debug("taskkill process-tree cleanup failed", exc_info=True)
@@ -146,7 +148,7 @@ def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = Fal
                     done = subprocess.run(["sudo", "-n", "kill", "-9", "--", f"-{pgid}"],
                                           capture_output=True, timeout=10)
                     if done.returncode == 0:
-                        return
+                        return reached
                     logger.warning("sudo kill of process group %s exited %s; falling back to kill()",
                                    pgid, done.returncode)
                 except Exception:  # noqa: BLE001
@@ -154,9 +156,9 @@ def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = Fal
             else:
                 try:
                     os.killpg(pgid, signal.SIGKILL)
-                    return
+                    return reached
                 except ProcessLookupError:
-                    return
+                    return reached
                 except PermissionError:
                     logger.warning("no permission to kill process group %s", pgid)
 
@@ -165,6 +167,7 @@ def _kill_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool = Fal
         proc.kill()
     except (ProcessLookupError, PermissionError):
         pass
+    return reached
 
 
 # How long to wait for the process tree to go away after the kill. Something that
@@ -207,9 +210,11 @@ async def _stop_process_tree(proc: asyncio.subprocess.Process, *, elevated: bool
     """Kill the tree and wait briefly for it to go. Returns False when something
     outlived the kill and still held our pipes: we close our end and return
     instead of waiting for it, and it keeps running on its own."""
-    _kill_process_tree(proc, elevated=elevated)
+    reached = _kill_process_tree(proc, elevated=elevated)
     if await wait_gone(proc, STOP_GRACE_SECONDS):
-        return True
+        # The shell's group is gone; an escaped descendant the kill couldn't reach
+        # may still be running, without holding our pipes.
+        return reached
     transport = getattr(proc, "_transport", None)
     if transport is not None:
         transport.close()
@@ -343,7 +348,7 @@ def timeout_text(partial: str, left_running: bool = False) -> str:
     return f"{text}\n{LEFT_RUNNING_NOTE}" if left_running else text
 
 
-def _shell_argv(cmd: str) -> list[str]:
+def _shell_argv(cmd: str, *, clean_startup: bool = False) -> list[str]:
     """Build the argv that runs `cmd` through the platform's default shell.
 
     POSIX: `bash -lc <cmd>`. Windows has no bash natively, so we use
@@ -353,7 +358,19 @@ def _shell_argv(cmd: str) -> list[str]:
     """
     if sys.platform == "win32":
         return [_win_powershell(), "-NoProfile", "-NonInteractive", "-Command", cmd]
+    if clean_startup:
+        # No login shell and no rc files: what they define (a function named like
+        # the allowed command, a PATH entry) would run before anything the caller
+        # checked (Jan's audit, sxrep_NBEA83P4PV36 on 0.23.41).
+        return ["bash", "--noprofile", "--norc", "-c", cmd]
     return ["bash", "-lc", cmd]
+
+
+def _without_startup_hooks(env: dict[str, str]) -> dict[str, str]:
+    """The environment minus what makes bash run code before the command: BASH_ENV
+    and ENV (sourced by a non-interactive shell) and exported functions."""
+    return {k: v for k, v in env.items()
+            if k not in ("BASH_ENV", "ENV") and not k.startswith("BASH_FUNC_")}
 
 
 # Cache the resolved interpreter: the probing below touches the filesystem and
@@ -428,6 +445,7 @@ async def run_shell(
     timeout: float = 60.0,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    clean_startup: bool = False,
 ) -> dict[str, Any]:
     """Run a shell command via `bash -lc`. Returns a dict identical to the legacy shape.
 
@@ -444,7 +462,10 @@ async def run_shell(
         full_env.update(env)
 
     try:
-        r = await run_process(_shell_argv(cmd), timeout=timeout, cwd=cwd, env=full_env)
+        if clean_startup:
+            full_env = _without_startup_hooks(full_env)
+        r = await run_process(_shell_argv(cmd, clean_startup=clean_startup), timeout=timeout,
+                              cwd=cwd, env=full_env)
         stdout_b, stderr_b, left_running = r.stdout, r.stderr, r.left_running
         if r.timed_out:
             partial = "\n".join(

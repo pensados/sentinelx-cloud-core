@@ -201,6 +201,16 @@ def record(op: str, payload: dict[str, Any], ok: bool,
             if len(line.encode("utf-8", "replace")) > MAX_ENTRY_BYTES:
                 entry["payload"] = {k: entry["payload"][k] for k in ("_summarized", "chars", "sha256")}
                 line = json.dumps(entry, ensure_ascii=False, default=str)
+        # The cap is on the whole entry, not only its payload: an oversized `error`
+        # wrote 280 KB lines past a minimal payload (sxrep_YC39MPSTA6S2 on 0.23.42).
+        if len(line.encode("utf-8", "replace")) > MAX_ENTRY_BYTES:
+            for key, value in list(entry.items()):
+                if key not in ("timestamp", "op") and isinstance(value, str) and len(value) > 2048:
+                    entry[key] = f"{value[:2048]}... [{len(value)} chars, truncated]"
+            line = json.dumps(entry, ensure_ascii=False, default=str)
+        if len(line.encode("utf-8", "replace")) > MAX_ENTRY_BYTES:
+            line = json.dumps({"timestamp": entry["timestamp"], "op": op, "ok": ok,
+                               "truncated": True, "bytes": len(line.encode("utf-8", "replace"))})
 
         AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
         with AUDIT_PATH.open("a", encoding="utf-8") as f:

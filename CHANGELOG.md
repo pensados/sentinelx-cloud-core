@@ -3,6 +3,24 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.50 - SECURITY: allowlist exec without startup hooks; tree kill and audit cap completed - 2026-11-01
+
+Jan's follow-ups on 0.23.41 and 0.23.42.
+
+- SECURITY (sxrep_NBEA83P4PV36): allowlist-mode exec ran `bash -lc`, so login profiles, BASH_ENV/ENV and
+  exported functions ran BEFORE the prelude and could redefine the allowed command: `ls`, the only allowed
+  command, printed whatever a planted ~/.bash_profile said. It now runs `bash --noprofile --norc -c` with
+  BASH_ENV, ENV and BASH_FUNC_* removed from the child's environment. Behaviour change for allowlist
+  mode only: PATH is no longer extended by the agent user's profile files, so a command found only in a
+  directory a profile adds (nvm, ~/.local/bin) must be on the agent's own PATH. Unrestricted mode and
+  script_run are unchanged.
+- Tree kill (sxrep_AZ931A9557MC): _kill_process_tree returns whether every escaped descendant was reached,
+  and _stop_process_tree reports left_running when one wasn't, even if the shell's group died.
+- Local audit (sxrep_YC39MPSTA6S2): the cap applies to the whole entry: long text fields (error) are cut
+  after the payload, and as a last resort the entry becomes a minimal record.
+- tests/test_jan_followups_1101.py (real bash with planted profiles, BASH_ENV, ENV and an exported
+  function). 3 sabotages caught. Two tests' fake run_shell take the new keyword. Suite passes on 3.12/3.14.
+
 ## 0.23.49 - Python scripts import from their cwd; README on the edit helper - 2026-10-31
 
 From Jan's audit of 2026-10-31 (#5, #7).

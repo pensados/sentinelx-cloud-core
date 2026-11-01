@@ -28,7 +28,7 @@ async def _run(monkeypatch, allow, command, platform="linux", strict=False):
     from sentinelx_core.handlers import exec as ex
     seen = {}
 
-    async def fake_run(cmd, timeout):
+    async def fake_run(cmd, timeout, **_kw):
         seen["cmd"] = cmd
         return {"output": "", "returncode": 0}
 
