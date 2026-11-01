@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sentinelx-cloud-core"
-version = "0.23.50"
+version = "0.23.51"
 description = "SentinelX agent: connects a Linux server to sentinelx-cloud-hub via WebSocket"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,7 +20,7 @@ dependencies = [
     # that capability, and RequestMessage is extra="forbid", so a clean
     # install against v1.11.0 promised a field it would then reject the whole
     # message for carrying. Reported by FalconZip with the commit pair.
-    "sentinelx-cloud-protocol @ git+https://github.com/pensados/sentinelx-cloud-protocol.git@v1.13.2",
+    "sentinelx-cloud-protocol @ git+https://github.com/pensados/sentinelx-cloud-protocol.git@v1.13.3",
 ]
 
 [project.optional-dependencies]

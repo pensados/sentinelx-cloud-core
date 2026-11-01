@@ -3,6 +3,14 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.51 - Protocol 1.13.3: bounded responses trim error.message too - 2026-11-01
+
+- sentinelx-cloud-protocol pinned to v1.13.3: bound_response, which the agent applies to every response
+  before sending it, now trims a large error.message as well as the result (sxrep_TRP3VXQ98XNC, Jan). A
+  small result with a 400 KB message was delivered whole, over the 128 KiB soft limit. No wire-format
+  change: agents on 1.13.3 and hubs on 1.13.2 interoperate.
+- Suite passes on 3.12 and 3.14 with the protocol reinstalled from the v1.13.3 tag in both.
+
 ## 0.23.50 - SECURITY: allowlist exec without startup hooks; tree kill and audit cap completed - 2026-11-01
 
 Jan's follow-ups on 0.23.41 and 0.23.42.
