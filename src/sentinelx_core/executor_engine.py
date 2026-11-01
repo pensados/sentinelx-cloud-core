@@ -344,7 +344,21 @@ async def run_process(
             exc.sx_left_running = True
         raise
     if timed_out:
-        left_running = not await _stop_process_tree(proc, elevated=elevated)
+        # Run the kill to the end even if a cancel arrives meanwhile (an outer budget
+        # expiring during the grace wait), then re-raise that cancel, marked when the
+        # tree outlived the kill (sx-review, 2026-11-01: the mark was lost there).
+        stopping = asyncio.ensure_future(_stop_process_tree(proc, elevated=elevated))
+        cancel: asyncio.CancelledError | None = None
+        while not stopping.done():
+            try:
+                await asyncio.shield(stopping)
+            except asyncio.CancelledError as exc:
+                cancel = exc
+        left_running = not stopping.result()
+        if cancel is not None:
+            if left_running:
+                cancel.sx_left_running = True
+            raise cancel
         return ProcResult(-1, out, err, timed_out=True, left_running=left_running)
     return ProcResult(proc.returncode if proc.returncode is not None else -1, out, err)
 

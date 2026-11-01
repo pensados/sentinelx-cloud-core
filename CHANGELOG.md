@@ -3,6 +3,16 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.55 - Protocol 1.13.4; finding of sx-review on 0.23.54 - 2026-11-01
+
+- Protocol 1.13.4 (sxrep_TRP3VXQ98XNC, reopened): bound_response also bounds error.details and
+  error.code, and the schema limits ids (256) and error codes (128). A rejected 300 KB command no longer
+  comes back whole in details.
+- run_process: when a command's own timeout fired and an outer budget expired while the kill was still
+  being waited for, the cancel cut that wait and left_running was lost. The kill now runs to the end and
+  the cancel is re-raised afterwards, marked when something outlived it.
+- tests/test_review_findings_1101c.py: 2 tests, sabotage caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.54 - Findings of sx-review on 0.23.53 - 2026-11-01
 
 - left_running through cancellations (property 5.7): when a cancel passes through run_process and the
