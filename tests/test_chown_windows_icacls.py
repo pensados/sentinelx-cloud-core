@@ -1,14 +1,15 @@
-"""Windows chown: icacls runs in a thread with a timeout (agent 0.23.44, Jan's audit #16).
+"""Windows chown: icacls runs through run_process (agent 0.23.52; 0.23.44 used a thread).
 
-It ran as a blocking subprocess.run with no timeout inside the async handler, so a slow
-or wedged icacls froze the whole agent. Exercised on any OS by faking the platform.
+A wedged icacls is cut off at the timeout, and a cancelled request kills it instead of
+letting it change the owner afterwards (sxrep_1N5VN9Z8NNHG). Exercised on POSIX with a
+fake `icacls` on PATH, which is what run_process would start on Windows.
 """
 from __future__ import annotations
 
 import asyncio
 import dataclasses
-import subprocess
-import time
+import os
+import sys
 
 import pytest
 
@@ -16,40 +17,48 @@ from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers import fsmutate as FM
 from sentinelx_core.policy import FileOpsPath, Policy
 
+posix = pytest.mark.skipif(sys.platform == "win32", reason="fake icacls is a shell script")
 
-def _handler(tmp_path, monkeypatch, fake_run):
+
+def _fake_icacls(tmp_path, monkeypatch, body):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "icacls").write_text("#!/bin/sh\n" + body)
+    (bindir / "icacls").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+
+@posix
+async def test_cancelling_the_request_kills_icacls(tmp_path, monkeypatch):
+    marker = tmp_path / "changed"
+    _fake_icacls(tmp_path, monkeypatch, f"sleep 1; printf x > {marker}\n")
+    task = asyncio.create_task(FM._icacls_setowner(tmp_path, "someone"))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(1.5)
+    assert not marker.exists(), "icacls kept running after the request was cancelled"
+
+
+@posix
+async def test_a_wedged_icacls_is_cut_off_with_a_clear_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(FM, "ICACLS_TIMEOUT_SECONDS", 1)
+    _fake_icacls(tmp_path, monkeypatch, "sleep 30\n")
+    with pytest.raises(HandlerError) as e:
+        await FM._icacls_setowner(tmp_path, "someone")
+    assert e.value.code == "chown_failed" and "did not finish" in str(e.value)
+
+
+async def test_the_windows_branch_uses_it(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake(target, owner):
+        calls.append((str(target), owner))
     monkeypatch.setattr(FM.sys, "platform", "win32")
-    monkeypatch.setattr(FM.subprocess, "run", fake_run)
+    monkeypatch.setattr(FM, "_icacls_setowner", fake)
     target = tmp_path / "f.txt"
     target.write_text("x")
     pol = dataclasses.replace(Policy.empty(), file_ops_paths=(FileOpsPath(path=str(tmp_path), access="rw"),))
-    return FM.make_chown_handler(pol), target
-
-
-async def test_icacls_does_not_block_the_event_loop(tmp_path, monkeypatch):
-    def slow_icacls(argv, **kw):
-        time.sleep(0.6)
-        return subprocess.CompletedProcess(argv, 0, "", "")
-    h, target = _handler(tmp_path, monkeypatch, slow_icacls)
-    ticks = 0
-
-    async def ticker():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.05)
-            ticks += 1
-
-    t = asyncio.create_task(ticker())
-    res = await h({"path": str(target), "owner": "someone"})
-    t.cancel()
-    assert res["ok"] and res["backend"] == "icacls"
-    assert ticks >= 5, f"the event loop was blocked while icacls ran ({ticks} ticks)"
-
-
-async def test_a_wedged_icacls_is_cut_off_with_a_clear_error(tmp_path, monkeypatch):
-    def wedged(argv, **kw):
-        raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
-    h, target = _handler(tmp_path, monkeypatch, wedged)
-    with pytest.raises(HandlerError) as e:
-        await h({"path": str(target), "owner": "someone"})
-    assert e.value.code == "chown_failed" and "did not finish" in str(e.value)
+    res = await FM.make_chown_handler(pol)({"path": str(target), "owner": "someone"})
+    assert res["ok"] and res["backend"] == "icacls" and calls and calls[0][1] == "someone"

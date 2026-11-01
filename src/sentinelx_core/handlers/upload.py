@@ -142,13 +142,17 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> list[str]:
     return addresses
 
 
+# Chunk indexes are file names (%08d) and positions; far beyond any real upload.
+MAX_CHUNK_INDEX = 1_000_000
+
+
 def _finalize_no_clobber(tmp: Path, dest: Path) -> None:
     """Put tmp at dest only if nothing is there, atomically.
 
     overwrite=false used to be a check at the start of the request followed by an
     unconditional replace at the end, so a file created in between was overwritten
     (Jan's audit #13). A hard link fails with EEXIST instead. Where hard links aren't
-    available (some FUSE, SMB or FAT mounts) the check is repeated as late as possible.
+    available (some FUSE, SMB or FAT mounts) the name is reserved with O_EXCL first.
     """
     part = None
     try:
@@ -164,8 +168,11 @@ def _finalize_no_clobber(tmp: Path, dest: Path) -> None:
                     os.fsync(fh.fileno())
                 os.link(part, dest)
             else:
-                if dest.exists():
-                    raise FileExistsError(errno.EEXIST, "exists", str(dest)) from exc
+                # No hard links on this filesystem: reserve the name with O_EXCL, which
+                # fails if anything is there, then replace the reservation. exists()
+                # followed by replace() could overwrite a file created in between
+                # (sxrep_F27ESHNWMPNF).
+                os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
                 os.replace(tmp, dest)
                 return
     except FileExistsError as exc:
@@ -250,8 +257,8 @@ def write_transfer_part(upload_base: Path, upload_id: str, index: int, data: byt
     {index:08d}.part layout that upload_complete reassembles + hashes + finalizes
     atomically. The staging dir must already exist (created by upload_init with a
     matching upload_id == the Hub's transfer_id)."""
-    if index < 0:
-        raise HandlerError("invalid_payload", "index must be >= 0")
+    if index < 0 or index >= MAX_CHUNK_INDEX:
+        raise HandlerError("invalid_payload", f"index must be between 0 and {MAX_CHUNK_INDEX - 1}")
     tmp_root = upload_base / ".sentinelx_uploads"
     upload_dir = tmp_root / upload_id
     if not _meta_file(upload_dir).exists():
@@ -280,16 +287,33 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.sock.do_handshake()
 
 
+class _PinnedProxyHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to `host` through an HTTPS proxy, tunnelled to the validated address `ip`:
+    the proxy is asked to CONNECT to the address, not to the name, so it can't resolve
+    the name differently (sxrep_1SAMMGP269VG). TLS still verifies `host`."""
+
+    def __init__(self, proxy_host: str, proxy_port: int, host: str, port: int, ip: str,
+                 *, timeout: float) -> None:
+        super().__init__(proxy_host, proxy_port, timeout=timeout, context=ssl.create_default_context())
+        self._sx_host = host
+        self.set_tunnel(f"[{ip}]" if ":" in ip else ip, port)
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self.host, self.port), self.timeout)
+        self._tunnel()
+        # Handshake after self.sock is set, so a cancel can shut it down (see above).
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self._sx_host,
+                                              do_handshake_on_connect=False)
+        self.sock.do_handshake()
+
+
 def _fetch_connection(host: str, port: int, ip: str, timeout: float) -> http.client.HTTPSConnection:
-    """The pinned connection, or a CONNECT tunnel when an HTTPS proxy applies to the
-    host (urllib honoured HTTPS_PROXY; the proxy resolves the name there, as before)."""
+    """The connection to a validated address: direct, or through the HTTPS proxy that
+    applies to the host (urllib honoured HTTPS_PROXY), tunnelled to that address."""
     proxy = urllib.request.getproxies().get("https")
     if proxy and not urllib.request.proxy_bypass(host):
         pu = urlparse(proxy if "://" in proxy else f"http://{proxy}")
-        conn = http.client.HTTPSConnection(pu.hostname, pu.port or 8080, timeout=timeout,
-                                           context=ssl.create_default_context())
-        conn.set_tunnel(host, port)
-        return conn
+        return _PinnedProxyHTTPSConnection(pu.hostname, pu.port or 8080, host, port, ip, timeout=timeout)
     return _PinnedHTTPSConnection(host, port, ip, timeout=timeout)
 
 
@@ -353,8 +377,10 @@ async def _fetch_url(
             conn = _fetch_connection(host, port, ip, timeout)
             live.append(conn)
             try:
-                conn.request("GET", target, headers={"User-Agent": "sentinelx-agent",
-                                                     "Accept-Encoding": "identity"})
+                conn.request("GET", target, headers={
+                    # Explicit: through a tunnel to an address, http.client would send that.
+                    "Host": host if port == 443 else f"{host}:{port}",
+                    "User-Agent": "sentinelx-agent", "Accept-Encoding": "identity"})
                 resp = conn.getresponse()
             except (OSError, http.client.HTTPException) as exc:
                 last = exc
@@ -399,8 +425,6 @@ async def _fetch_url(
                 raise HandlerError("fetch_failed", f"could not fetch URL: {exc}") from exc
             finally:
                 conn.close()
-            if getattr(conn, "_tunnel_host", None):
-                break   # through a proxy the address list is meaningless
         raise HandlerError("fetch_failed", f"could not fetch URL: {last}")
 
     fut = asyncio.ensure_future(asyncio.to_thread(_do_fetch))
@@ -649,8 +673,8 @@ def make_upload_chunk_handler(upload_base: Path):
             idx = int(index)
         except (TypeError, ValueError) as exc:
             raise HandlerError("invalid_payload", "index must be int") from exc
-        if idx < 0:
-            raise HandlerError("invalid_payload", "index must be >= 0")
+        if idx < 0 or idx >= MAX_CHUNK_INDEX:
+            raise HandlerError("invalid_payload", f"index must be between 0 and {MAX_CHUNK_INDEX - 1}")
 
         upload_id = _validated_upload_id(upload_id)
         tmp_root = upload_base / ".sentinelx_uploads"
@@ -706,7 +730,17 @@ def make_upload_complete_handler(upload_base: Path, policy: "Policy | None" = No
         except ValueError:
             raise HandlerError("invalid_state", "unexpected files among the upload's chunks") from None
         if indexes != list(range(len(indexes))):
-            missing = sorted(set(range(max(indexes) + 1)) - set(indexes))
+            # The first 100 gaps, walking the sorted indexes: never a set the size of
+            # the largest index, which the caller chooses (sxrep_J68YSRS109FY).
+            missing: list[int] = []
+            expect = 0
+            for idx in indexes:
+                while expect < idx and len(missing) < 100:
+                    missing.append(expect)
+                    expect += 1
+                if len(missing) >= 100:
+                    break
+                expect = idx + 1
             raise HandlerError(
                 "incomplete_upload",
                 f"chunks must be numbered 0..N-1 with none missing; missing: {missing[:20]}",

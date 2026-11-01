@@ -3,6 +3,33 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.52 - SECURITY: Jan's follow-ups on 0.23.43-0.23.51 - 2026-11-01
+
+Each of these is a fix that left an edge open; the reproductions are Jan's.
+
+- SECURITY (sxrep_NBEA83P4PV36): allowlist-mode exec dropped BASH_ENV, ENV and exported functions but not
+  SHELLOPTS: inherited SHELLOPTS=xtrace with a PS4 holding $(...) ran code on the prelude's first command.
+  The child's environment now loses every variable bash acts on at startup (SHELLOPTS, BASHOPTS, PS0-PS4,
+  PROMPT_COMMAND, GLOBIGNORE, EXECIGNORE, IFS, CDPATH, BASH_XTRACEFD, BASH_COMPAT, POSIXLY_CORRECT, ...).
+- SECURITY (sxrep_1SAMMGP269VG): through HTTPS_PROXY, file_url's tunnel went to the name, so the proxy
+  resolved it again. The proxy is now asked to CONNECT to the validated address; TLS still verifies the
+  name, and the Host header is explicit.
+- sentinel_edit create=true (sxrep_YEKEFZ56TWY3): nothing is written at the target until the content is
+  validated, and the new file is installed only if the path is still free (hard link, or an O_EXCL
+  reservation without hard links); a file that appeared meanwhile is left alone (target_exists). The
+  0.23.43 cleanup, which could delete such a file, is gone. The mode follows the umask, as before.
+- upload overwrite=false without hard links (sxrep_F27ESHNWMPNF): the name is reserved with O_EXCL before
+  it is replaced, instead of exists() then replace().
+- chunked uploads (sxrep_J68YSRS109FY): the missing chunks are found walking the sorted indexes, never a
+  set the size of the largest one (1 MB of memory for index 1,000,000 was ~100 MB); indexes are capped
+  at MAX_CHUNK_INDEX (1,000,000).
+- Windows chown (sxrep_1N5VN9Z8NNHG): icacls runs through run_process, so a cancelled request kills it
+  instead of letting it change the owner afterwards. It was the one child still started outside it.
+- script_run with a cwd (sxrep_V0B3A89CJ4YV): the child's PWD is that cwd, not the agent's.
+- THREAT_MODEL.md: the proxy and no-hard-link residual risks are closed; 4.1 lists the startup variables.
+- tests/test_jan_followups_1101b.py and test_chown_windows_icacls.py (rewritten for run_process). 7 sabotages
+  caught. Suite passes on 3.12 and 3.14. First release reviewed by sx-review before it is offered.
+
 ## 0.23.51 - Protocol 1.13.3: bounded responses trim error.message too - 2026-11-01
 
 - sentinelx-cloud-protocol pinned to v1.13.3: bound_response, which the agent applies to every response

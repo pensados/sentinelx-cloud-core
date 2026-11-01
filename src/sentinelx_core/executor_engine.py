@@ -366,11 +366,22 @@ def _shell_argv(cmd: str, *, clean_startup: bool = False) -> list[str]:
     return ["bash", "-lc", cmd]
 
 
+# Variables bash reads at startup that change how it behaves before the command runs.
+# SHELLOPTS=xtrace with a PS4 holding $(...) ran code on the prelude's first command
+# (sxrep_NBEA83P4PV36, after 0.23.50 had removed BASH_ENV/ENV/BASH_FUNC_* only).
+_BASH_STARTUP_VARS = frozenset({
+    "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS0", "PS1", "PS2", "PS3", "PS4",
+    "PROMPT_COMMAND", "GLOBIGNORE", "EXECIGNORE", "IFS", "CDPATH", "BASH_XTRACEFD",
+    "BASH_COMPAT", "POSIXLY_CORRECT", "BASH_LOADABLES_PATH", "INPUTRC", "HISTFILE",
+})
+
+
 def _without_startup_hooks(env: dict[str, str]) -> dict[str, str]:
-    """The environment minus what makes bash run code before the command: BASH_ENV
-    and ENV (sourced by a non-interactive shell) and exported functions."""
+    """The environment minus everything bash acts on at startup: the files it sources
+    (BASH_ENV, ENV), the options and prompts it imports (SHELLOPTS, BASHOPTS, PS4...),
+    what changes word splitting or command lookup, and exported functions."""
     return {k: v for k, v in env.items()
-            if k not in ("BASH_ENV", "ENV") and not k.startswith("BASH_FUNC_")}
+            if k not in _BASH_STARTUP_VARS and not k.startswith("BASH_FUNC_")}
 
 
 # Cache the resolved interpreter: the probing below touches the filesystem and

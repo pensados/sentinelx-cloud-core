@@ -364,6 +364,32 @@ def _write_over(target: Path, source: Path) -> None:
         os.fsync(dst.fileno())
 
 
+def _install_new(tmp_path: Path, target: Path) -> None:
+    """Put a newly created file in place only if nothing appeared at target meanwhile:
+    a hard link fails if it exists; without hard links, the name is reserved with
+    O_EXCL first. The mode follows the umask, as a plain create would."""
+    mask = os.umask(0)
+    os.umask(mask)
+    os.chmod(tmp_path, 0o666 & ~mask)
+    taken = SafeEditError(
+        "target_exists",
+        f"{target} was created by someone else while this edit was being prepared; it was "
+        "left as it is and nothing was written",
+    )
+    try:
+        os.link(tmp_path, target)
+    except FileExistsError as exc:
+        raise taken from exc
+    except OSError:
+        try:
+            os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except FileExistsError as exc:
+            raise taken from exc
+        os.replace(tmp_path, target)
+        return
+    os.unlink(tmp_path)
+
+
 def _install(tmp_path: Path, target: Path, result: "EditResult") -> None:
     """Put the new content at target without changing who owns it.
 
@@ -672,22 +698,10 @@ def _do_restore(spec: EditSpec) -> EditResult:
 
 
 def apply_edit(spec: EditSpec) -> EditResult:
-    """Apply an edit (or restore); see _apply_edit. A create that fails leaves no
-    file behind: the empty target made to read from is removed again (Jan's audit
-    #10: a create with invalid JSON left a zero-byte file)."""
-    target = Path(spec.path)
-    creating = bool(spec.create) and not spec.dry_run and not spec.restore and not (
-        target.exists() or target.is_symlink())
-    try:
-        return _apply_edit(spec)
-    except BaseException:
-        if creating:
-            try:
-                if target.is_file() and not target.is_symlink() and target.stat().st_size == 0:
-                    target.unlink()
-            except OSError:
-                pass
-        raise
+    """Apply an edit (or restore); see _apply_edit. A create writes nothing at the
+    target until its content is validated, and never replaces a file that appeared
+    meanwhile (0.23.52; 0.23.43 created it first and removed it on failure)."""
+    return _apply_edit(spec)
 
 
 def _apply_edit(spec: EditSpec) -> EditResult:
@@ -719,18 +733,19 @@ def _apply_edit(spec: EditSpec) -> EditResult:
     # Nothing touches the disk until the arguments are known to be good, and
     # a dry run never creates the parent directories or the target: a missing
     # target is simulated as empty, in memory.
+    creating = False
     if not target.exists():
         if not spec.create:
             raise SafeEditError(
                 "target_not_found",
                 "file does not exist; pass --create to create it",
             )
-        if spec.dry_run:
-            original = ""
-        else:
+        # Nothing is created before the content is validated: the new file is put in
+        # place at the end, and only if the path is still free (sxrep_YEKEFZ56TWY3).
+        if not spec.dry_run:
             ensure_parent(target)
-            target.touch()
-            original = read_text(target)
+        original = ""
+        creating = True
     else:
         original = read_text(target)
     updated, changed = _apply_mode(spec, original)
@@ -791,6 +806,9 @@ def _apply_edit(spec: EditSpec) -> EditResult:
             result.dry_run = True
             return result
 
+        if creating:
+            _install_new(tmp_path, target)
+            return result
         if not spec.no_backup:
             result.backup = str(make_backup(target, backup_dir))
         _install(tmp_path, target, result)

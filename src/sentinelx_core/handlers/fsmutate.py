@@ -65,12 +65,10 @@ chmod_failed / chown_failed.
 from __future__ import annotations
 
 import errno
-import asyncio
 import json
 import re as _re
 import os
 import shutil
-import subprocess
 import sys
 import tarfile
 import time
@@ -88,6 +86,7 @@ except ModuleNotFoundError:  # Windows
     grp = None  # type: ignore[assignment]
     pwd = None  # type: ignore[assignment]
 
+from sentinelx_core.executor_engine import run_process
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.policy import Policy
 from sentinelx_core.vendored.pensa_safe_edit import make_backup
@@ -639,6 +638,19 @@ def make_chmod_handler(policy: Policy):
 ICACLS_TIMEOUT_SECONDS = 60
 
 
+async def _icacls_setowner(target: Path, owner: str) -> None:
+    """Windows chown through run_process: bounded, and a cancelled request kills icacls
+    instead of leaving it to change the owner afterwards. 0.23.44 ran it in a thread,
+    which a cancel abandoned (sxrep_1N5VN9Z8NNHG)."""
+    r = await run_process(["icacls", str(target), "/setowner", owner], timeout=ICACLS_TIMEOUT_SECONDS)
+    if r.timed_out:
+        raise HandlerError("chown_failed",
+                           f"icacls /setowner did not finish within {ICACLS_TIMEOUT_SECONDS} s")
+    if r.returncode != 0:
+        out = (r.stderr or r.stdout).decode(errors="replace").strip()
+        raise HandlerError("chown_failed", f"icacls /setowner failed: {out}")
+
+
 def make_chown_handler(policy: Policy):
     async def handle_chown(payload: dict[str, Any]) -> dict[str, Any]:
         """Change owner and/or group.
@@ -678,25 +690,7 @@ def make_chown_handler(policy: Policy):
             # In a thread and bounded: a slow or wedged icacls used to block the
             # agent's event loop indefinitely, every operation with it (Jan's audit
             # #16; flagged by Ruff ASYNC221).
-            try:
-                proc = await asyncio.to_thread(
-                    subprocess.run,
-                    ["icacls", str(target), "/setowner", str(owner)],
-                    capture_output=True,
-                    text=True,
-                    timeout=ICACLS_TIMEOUT_SECONDS,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise HandlerError(
-                    "chown_failed",
-                    f"icacls /setowner did not finish within {ICACLS_TIMEOUT_SECONDS} s",
-                ) from exc
-            if proc.returncode != 0:
-                raise HandlerError(
-                    "chown_failed",
-                    "icacls /setowner failed: "
-                    f"{(proc.stderr or proc.stdout or '').strip()}",
-                )
+            await _icacls_setowner(target, str(owner))
             _audit(
                 "chown",
                 {"path": str(target), "owner": owner, "backend": "icacls"},

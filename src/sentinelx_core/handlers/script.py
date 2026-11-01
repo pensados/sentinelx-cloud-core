@@ -434,6 +434,10 @@ def make_script_run_handler(policy: Policy, upload_base: Path):
 
             full_env = os.environ.copy()
             full_env.update(env_extra)
+            if cwd:
+                # The child's PWD names its working directory, not the agent's
+                # (sxrep_V0B3A89CJ4YV: os.getcwd() and $PWD disagreed).
+                full_env["PWD"] = str(cwd)
             if interpreter == "python3" and sys.platform == "win32":
                 # Without this, Python inherits the console's legacy code page
                 # for stdio and raises UnicodeEncodeError the moment a script
