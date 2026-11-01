@@ -238,7 +238,9 @@ async def _call_via_run_as(endpoint: Any, payload: bytes) -> bytes:
     # run_process reports that as left_running instead of hiding it.
     r = await run_process(_relay_command(endpoint), timeout=endpoint.timeout_s + 5, input=payload)
     if r.timed_out:
-        raise LocalApiError("timeout", f"{endpoint.name} did not answer in time")
+        still = (f"; the relay (running as {endpoint.run_as}) outlived the kill and is still running"
+                 if r.left_running else "")
+        raise LocalApiError("timeout", f"{endpoint.name} did not answer in time{still}")
     out, err = r.stdout, r.stderr
 
     if r.returncode == 0 and out:

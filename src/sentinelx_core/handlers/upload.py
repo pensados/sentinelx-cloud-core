@@ -142,8 +142,27 @@ def _validate_fetch_url(url: str, trusted_hosts: tuple[str, ...]) -> list[str]:
     return addresses
 
 
-# Chunk indexes are file names (%08d) and positions; far beyond any real upload.
-MAX_CHUNK_INDEX = 1_000_000
+# Chunk indexes are file names (%08d, sorted as text): 8 digits is the real limit.
+MAX_CHUNK_INDEX = 100_000_000
+
+
+def _replace_reservation(tmp: Path, dest: Path) -> None:
+    """Reserve dest with O_EXCL (fails if anything is there), then replace the
+    reservation with tmp. If the replace fails, the empty reservation is removed, but
+    only if it is still ours (sx-review, 2026-11-01: it was left behind)."""
+    fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    mine = os.fstat(fd)
+    os.close(fd)
+    try:
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            now = os.lstat(dest)
+            if (now.st_ino, now.st_dev) == (mine.st_ino, mine.st_dev) and now.st_size == 0:
+                os.unlink(dest)
+        except OSError:
+            pass
+        raise
 
 
 def _finalize_no_clobber(tmp: Path, dest: Path) -> None:
@@ -172,8 +191,7 @@ def _finalize_no_clobber(tmp: Path, dest: Path) -> None:
                 # fails if anything is there, then replace the reservation. exists()
                 # followed by replace() could overwrite a file created in between
                 # (sxrep_F27ESHNWMPNF).
-                os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-                os.replace(tmp, dest)
+                _replace_reservation(tmp, dest)
                 return
     except FileExistsError as exc:
         raise HandlerError(
@@ -279,6 +297,11 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        if getattr(self, "sx_stop", None) is not None and self.sx_stop.is_set():
+            # Cancelled while the TCP connect was blocked, when no socket was there to
+            # shut: send nothing, not even the TLS hello (sx-review, 2026-11-01).
+            sock.close()
+            raise ConnectionAbortedError("cancelled during the connect")
         # The handshake runs after self.sock is set, so a cancel can shut the socket
         # down while the handshake is blocked. wrap_socket would otherwise handshake
         # before returning, and the raw socket it detaches can't be used to wake it.
@@ -301,6 +324,11 @@ class _PinnedProxyHTTPSConnection(http.client.HTTPSConnection):
     def connect(self) -> None:
         self.sock = socket.create_connection((self.host, self.port), self.timeout)
         self._tunnel()
+        if getattr(self, "sx_stop", None) is not None and self.sx_stop.is_set():
+            # Cancelled while the TCP connect was blocked, when no socket was there to
+            # shut: send nothing, not even the TLS hello (sx-review, 2026-11-01).
+            self.sock.close()
+            raise ConnectionAbortedError("cancelled during the connect")
         # Handshake after self.sock is set, so a cancel can shut it down (see above).
         self.sock = self._context.wrap_socket(self.sock, server_hostname=self._sx_host,
                                               do_handshake_on_connect=False)
@@ -375,6 +403,7 @@ async def _fetch_url(
             if stop.is_set():
                 raise _cancelled()
             conn = _fetch_connection(host, port, ip, timeout)
+            conn.sx_stop = stop
             live.append(conn)
             try:
                 conn.request("GET", target, headers={

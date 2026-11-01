@@ -268,7 +268,8 @@ async def _run_argv(argv: list[str], timeout: int = 60) -> dict[str, Any]:
     # and a cancelled edit could still commit (Jan's audit #8).
     start = time.time()
     try:
-        r = await run_process(argv, timeout=timeout)
+        # A helper started through sudo runs as root: only sudo kill reaches it.
+        r = await run_process(argv, timeout=timeout, elevated=bool(argv) and argv[0] == "sudo")
         if r.timed_out:
             return {
                 "output": timeout_text("", r.left_running),

@@ -92,7 +92,8 @@ async def _run_git(
         env=env,
     )
     if r.timed_out:
-        raise HandlerError("git_timeout", f"git {args[0] if args else '?'} timed out")
+        # left_running when something git started outlived the kill (property 5.7).
+        raise HandlerError("git_timeout", f"git {args[0] if args else '?'} timed out", {"left_running": True} if r.left_running else None)
     return r.returncode or 0, r.stdout, r.stderr
 
 

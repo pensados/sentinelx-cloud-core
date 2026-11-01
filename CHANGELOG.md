@@ -3,6 +3,28 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.53 - Findings of sx-review on 0.23.43-0.23.52 - 2026-11-01
+
+Found by the automated review (sx-review): six in a backtest of 0.23.43..0.23.51, five in its review
+of 0.23.52, before that release was offered to any host.
+
+- left_running on timeouts (property 5.7): git, project_snapshot and icacls now say when something they
+  started outlived the kill (details.left_running); the local_api relay says it in its message. The
+  threat model already promised this for the relay.
+- The edit helper started through sudo gets an elevated kill on timeout.
+- file_url: a fetch cancelled while the TCP connect was blocked sends nothing once the connect completes,
+  not even the TLS hello (the check is inside connect, between TCP and TLS).
+- service: run_shell_split (its only caller) runs with the clean startup of allowlist-mode exec: no
+  profile files, no bash startup variables, no exported functions.
+- move across bind mounts of one filesystem: rename's EXDEV falls back to the copy, as shutil.move did
+  before 0.23.43.
+- The O_EXCL reservation used without hard links (upload overwrite=false, edit create=true) is removed if
+  the replace fails, and only while it is still ours (same inode, empty).
+- A create that fails removes the directories it made for its target (deepest first, only while empty).
+- MAX_CHUNK_INDEX is 100,000,000, the width of the part file names, so small chunks of a large upload are
+  not refused.
+- tests/test_review_findings_1101.py: 12 tests, 10 sabotages caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.52 - SECURITY: Jan's follow-ups on 0.23.43-0.23.51 - 2026-11-01
 
 Each of these is a fix that left an edge open; the reproductions are Jan's.

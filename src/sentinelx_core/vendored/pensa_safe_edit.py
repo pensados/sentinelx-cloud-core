@@ -382,10 +382,23 @@ def _install_new(tmp_path: Path, target: Path) -> None:
         raise taken from exc
     except OSError:
         try:
-            os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError as exc:
             raise taken from exc
-        os.replace(tmp_path, target)
+        mine = os.fstat(fd)
+        os.close(fd)
+        try:
+            os.replace(tmp_path, target)
+        except BaseException:
+            # Remove the empty reservation if the replace failed, and only if it is
+            # still ours (sx-review, 2026-11-01).
+            try:
+                now = os.lstat(target)
+                if (now.st_ino, now.st_dev) == (mine.st_ino, mine.st_dev) and now.st_size == 0:
+                    os.unlink(target)
+            except OSError:
+                pass
+            raise
         return
     os.unlink(tmp_path)
 
@@ -701,7 +714,24 @@ def apply_edit(spec: EditSpec) -> EditResult:
     """Apply an edit (or restore); see _apply_edit. A create writes nothing at the
     target until its content is validated, and never replaces a file that appeared
     meanwhile (0.23.52; 0.23.43 created it first and removed it on failure)."""
-    return _apply_edit(spec)
+    target = Path(spec.path)
+    # Directories a create makes for its target are removed again if it fails, deepest
+    # first and only while empty (sx-review, 2026-11-01: they were left behind).
+    new_dirs: list[Path] = []
+    if spec.create and not spec.dry_run and not spec.restore:
+        p = target.parent
+        while not p.exists():
+            new_dirs.append(p)
+            p = p.parent
+    try:
+        return _apply_edit(spec)
+    except BaseException:
+        for d in new_dirs:
+            try:
+                d.rmdir()
+            except OSError:
+                break
+        raise
 
 
 def _apply_edit(spec: EditSpec) -> EditResult:

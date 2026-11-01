@@ -274,13 +274,17 @@ def _move_failure_atomic(src: Path, dst: Path, *, replace: bool) -> None:
             os.rename(dst, old)
         try:
             os.rename(src, dst)
-        except BaseException:
+        except BaseException as exc:
             if old is not None:
                 os.rename(old, dst)
-            raise
-        if old is not None:
-            _discard(old)
-        return
+            # Bind mounts of one filesystem share st_dev, yet rename across them fails
+            # with EXDEV: copy instead, as shutil.move did (sx-review, 2026-11-01).
+            if not (isinstance(exc, OSError) and exc.errno == errno.EXDEV):
+                raise
+        else:
+            if old is not None:
+                _discard(old)
+            return
     # Across filesystems: copy beside the destination, put it in place, then remove
     # the source. The old destination waits aside until the source is gone.
     staged = _sibling(dst, "new")
@@ -645,7 +649,8 @@ async def _icacls_setowner(target: Path, owner: str) -> None:
     r = await run_process(["icacls", str(target), "/setowner", owner], timeout=ICACLS_TIMEOUT_SECONDS)
     if r.timed_out:
         raise HandlerError("chown_failed",
-                           f"icacls /setowner did not finish within {ICACLS_TIMEOUT_SECONDS} s")
+                           f"icacls /setowner did not finish within {ICACLS_TIMEOUT_SECONDS} s",
+                           {"left_running": True} if r.left_running else None)
     if r.returncode != 0:
         out = (r.stderr or r.stdout).decode(errors="replace").strip()
         raise HandlerError("chown_failed", f"icacls /setowner failed: {out}")

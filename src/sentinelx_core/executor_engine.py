@@ -519,11 +519,17 @@ async def run_shell_split(
     timeout: float = 60.0,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    clean_startup: bool = True,
 ) -> dict[str, Any]:
     """Like run_shell but returns stdout and stderr separately.
 
     Returns:
         {"stdout": str, "stderr": str, "duration": float, "returncode": int}
+    
+
+    Service commands (its only caller) get the same clean startup as exec in
+    allowlist mode: no profile files, no bash startup variables, no exported
+    functions, which could otherwise redefine systemctl (sx-review, 2026-11-01).
     """
     start = time.time()
     full_env = os.environ.copy()
@@ -531,7 +537,10 @@ async def run_shell_split(
         full_env.update(env)
 
     try:
-        r = await run_process(_shell_argv(cmd), timeout=timeout, cwd=cwd, env=full_env)
+        if clean_startup:
+            full_env = _without_startup_hooks(full_env)
+        r = await run_process(_shell_argv(cmd, clean_startup=clean_startup), timeout=timeout,
+                              cwd=cwd, env=full_env)
         stdout_b, stderr_b, left_running = r.stdout, r.stderr, r.left_running
         if r.timed_out:
             return {

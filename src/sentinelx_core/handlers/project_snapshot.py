@@ -69,6 +69,8 @@ async def _git_toplevel(root: Path) -> tuple[int, bytes, bytes]:
         timeout=_GIT_CMD_TIMEOUT, input=b"", env=env,
     )
     if r.timed_out:
+        if r.left_running:
+            raise HandlerError("git_timeout", "git rev-parse timed out", {"left_running": True})
         return 1, b"", b""
     return r.returncode or 0, r.stdout, r.stderr
 
@@ -82,7 +84,7 @@ async def _run_git(root: Path, *args: str) -> tuple[int, bytes]:
         timeout=_GIT_CMD_TIMEOUT, input=b"", env=env,
     )
     if r.timed_out:
-        raise HandlerError("git_timeout", f"git {args[0]} timed out")
+        raise HandlerError("git_timeout", f"git {args[0]} timed out", {"left_running": True} if r.left_running else None)
     return r.returncode or 0, r.stdout
 
 
