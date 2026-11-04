@@ -181,3 +181,26 @@ async def test_sudo_edit_with_validator_refused_before_anything_runs(tmp_path, r
                                            "sudo": True, "validator": "cat /etc/shadow /nonexistent"}), 15)
     assert exc.value.code == "validator_not_allowed"
     assert target.read_text() == "old\n"
+
+
+# --- edit_upload's upload_id must not leave the staging root (sx-review on 3862aa4) ---
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["x/../../victim", "../victim", "/abs", "", 7, "zz" * 16])
+async def test_edit_upload_rejects_an_upload_id_that_is_not_hex(tmp_path, real_safe_edit, bad) -> None:
+    policy, target, _ = _setup(tmp_path)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "precious.txt").write_text("owner data\n")
+    uid = bad if not isinstance(bad, str) or "victim" not in bad else "x" + "/.." * 40 + str(victim)
+    with patch("sentinelx_core.handlers.edit._resolve_safe_edit_bin", return_value=str(real_safe_edit)):
+        reg = build_registry(policy=policy)
+        with pytest.raises(HandlerError) as exc:
+            await reg["edit_upload_file"]({"upload_id": uid, "role": "new", "content": "planted\n"})
+        assert exc.value.code == "invalid_payload"
+        with pytest.raises(HandlerError) as exc:
+            await reg["edit_upload_complete"]({"upload_id": uid, "path": str(target), "mode": "write"})
+        assert exc.value.code in ("invalid_payload", "missing_role_file")
+    assert not (victim / "new.txt").exists()
+    assert (victim / "precious.txt").read_text() == "owner data\n"
+    assert target.read_text() == "old\n"

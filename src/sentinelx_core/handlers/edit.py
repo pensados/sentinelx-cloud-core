@@ -51,6 +51,7 @@ from sentinelx_core.executor import HandlerError
 from sentinelx_core.executor_engine import run_process, timeout_text
 from sentinelx_core.policy import Policy
 from sentinelx_core.staging import staging_root
+from sentinelx_core.handlers.upload import _UPLOAD_ID_RE
 
 VALID_MODES = ("replace", "regex", "replace-block", "append", "prepend", "write")
 VALID_PRESETS = ("nginx", "json", "python", "sh", "yaml", "systemd", "toml")
@@ -483,9 +484,19 @@ def make_edit_handler(policy: Policy, upload_base: Path):
 
 # --- Chunked edit upload --------------------------------------------------------
 
-def _edit_upload_dir(upload_base: Path, upload_id: str) -> Path:
+def _edit_upload_dir(upload_base: Path, upload_id: object) -> Path:
+    # upload_id becomes a directory name that edit_upload_file writes into and
+    # edit_upload_complete removes with rmtree. Until 0.23.59 it was not checked,
+    # so "x/../../<any dir>" wrote new.txt outside the rw paths and then deleted
+    # that directory (sx-review on 3862aa4). edit_upload_init hands out a uuid4
+    # hex; accept only the hex shape the plain upload already enforces.
+    if not isinstance(upload_id, str) or not _UPLOAD_ID_RE.match(upload_id):
+        raise HandlerError(
+            "invalid_payload",
+            "upload_id must be the hex id returned by edit_upload_init",
+        )
     tmp_root = staging_root(upload_base)
-    upload_dir = tmp_root / f"edit_{upload_id}"
+    upload_dir = tmp_root / f"edit_{upload_id.lower()}"
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
 

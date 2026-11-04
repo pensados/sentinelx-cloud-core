@@ -3,6 +3,16 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.59 - Finding of sx-review on 0.23.58: edit_upload's upload_id left the staging root - 2026-11-04
+
+- edit_upload_file and edit_upload_complete built their working directory from the caller's upload_id with
+  no check, so upload_id "x/../../<dir>" wrote new.txt into a directory outside every rw path, and
+  edit_upload_complete then removed that directory with rmtree, even when the edit itself failed. Older than
+  this release series; found and reproduced by sx-review while reviewing 0.23.58. upload_id must now be the
+  hex id edit_upload_init returns (the shape the plain upload already enforces).
+- tests/test_edit_validator_policy.py: 6 parametrized cases (traversal, absolute, empty, non-string,
+  non-hex); sabotage caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.58 - Finding of sx-review on 0.23.57: a sudo edit's validator runs as root - 2026-11-04
 
 - A sudo edit starts the safe edit, and with it the validator, as root. 0.23.57 checked the validator
