@@ -178,6 +178,69 @@ def _validate_mode_payload(mode: str, payload: dict[str, Any]) -> None:
             )
 
 
+def _check_validator(policy: Policy, payload: dict[str, Any]) -> None:
+    """Hold a custom validator to the host's exec policy.
+
+    `validator` is a command the agent runs (shlex-split, no shell) before
+    installing the edit. Until 0.23.57 nothing checked it: on a host with exec
+    in disabled_ops, or exec_mode strict and an empty allowed_commands, a
+    sentinel_edit with validator="bash -c '...'" still ran the command, as the
+    agent's user, or as root for a sudo edit. Found 2026-11-04 while answering
+    sxrep_VZX9K6YFMT3K. It now answers to the same rules as exec: refused when
+    exec is disabled, allowed in exec_mode unrestricted, and otherwise only
+    when allowed_commands covers it. validator_preset runs one of a fixed set
+    of checks and is unaffected.
+    """
+    validator = payload.get("validator")
+    if validator is None or validator == "":
+        return
+    if not isinstance(validator, str):
+        raise HandlerError("invalid_payload", "'validator' must be a string")
+    if "exec" in policy.disabled_ops:
+        raise HandlerError(
+            "validator_not_allowed",
+            "A custom validator runs a command, and exec is disabled on this "
+            "host (disabled_ops), so it was not run and nothing was written. "
+            "Use validator_preset (json, yaml, python, sh, toml, systemd, nginx) "
+            "or edit without a validator.",
+            details={"validator": validator},
+        )
+    if policy.effective_exec_mode == "unrestricted":
+        return
+    if not policy.is_command_allowed(validator):
+        raise HandlerError(
+            "validator_not_allowed",
+            "A custom validator runs a command, and this one is not covered by "
+            "allowed_commands on this host, so it was not run and nothing was "
+            "written. Use validator_preset, or ask the operator to add the "
+            "command to allowed_commands.",
+            details={"validator": validator, "allowed_commands": list(policy.allowed_commands)},
+        )
+
+
+def _resolve_backup_dir(policy: Policy, payload: dict[str, Any]) -> str | None:
+    """backup_dir is a write too: it must fall under a file_ops entry with rw.
+
+    Until 0.23.57 it was passed through unchecked, so the copy of the previous
+    version could be written to any directory the agent's user could write.
+    """
+    backup_dir = payload.get("backup_dir")
+    if backup_dir is None or backup_dir == "":
+        return None
+    resolved = policy.resolve_path(str(backup_dir), need_write=True)
+    if resolved is None:
+        raise HandlerError(
+            "path_not_allowed",
+            "backup_dir must be under a file_ops entry with access: rw. "
+            "Nothing was written.",
+            details={
+                "backup_dir": str(backup_dir),
+                "writable_paths": [e.path for e in policy.file_ops_paths if e.access == "rw"],
+            },
+        )
+    return str(resolved)
+
+
 def _build_argv(
     *,
     binary: str,
@@ -359,6 +422,9 @@ def make_edit_handler(policy: Policy, upload_base: Path):
                 "secret edits take no diff, create or backup_dir",
             )
 
+        _check_validator(policy, payload)
+        backup_dir = _resolve_backup_dir(policy, payload)
+
         tmp_root = staging_root(upload_base)
 
         workdir = tmp_root / f"edit_job_{uuid.uuid4().hex}"
@@ -380,7 +446,7 @@ def make_edit_handler(policy: Policy, upload_base: Path):
                 multiline=bool(payload.get("multiline", False)),
                 dotall=bool(payload.get("dotall", False)),
                 interpret_escapes=bool(payload.get("interpret_escapes", False)),
-                backup_dir=payload.get("backup_dir"),
+                backup_dir=backup_dir,
                 validator=payload.get("validator"),
                 validator_preset=payload.get("validator_preset"),
                 diff=bool(payload.get("diff", False)),
@@ -560,6 +626,9 @@ def make_edit_upload_complete_handler(policy: Policy, upload_base: Path):
                 details={"writable_paths": rw_paths},
             )
 
+        _check_validator(policy, payload)
+        backup_dir = _resolve_backup_dir(policy, payload)
+
         upload_dir = _edit_upload_dir(upload_base, upload_id)
         old_file = upload_dir / "old.txt"
         new_file = upload_dir / "new.txt"
@@ -601,7 +670,7 @@ def make_edit_upload_complete_handler(policy: Policy, upload_base: Path):
             multiline=bool(payload.get("multiline", False)),
             dotall=bool(payload.get("dotall", False)),
             interpret_escapes=bool(payload.get("interpret_escapes", False)),
-            backup_dir=payload.get("backup_dir"),
+            backup_dir=backup_dir,
             validator=payload.get("validator"),
             validator_preset=payload.get("validator_preset"),
             diff=bool(payload.get("diff", False)),

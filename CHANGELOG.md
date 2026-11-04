@@ -3,6 +3,23 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.57 - edit's validator and backup_dir answer to the policy (security) - 2026-11-04
+
+- sentinel_edit's custom `validator` is a command the safe edit runs before installing the change, and
+  nothing checked it: on a host with `exec` in `disabled_ops`, or `exec_mode: strict` with an empty
+  `allowed_commands`, an edit with `validator="bash -c '...'"` still ran it, as the agent's user (as root
+  for a sudo edit). Found 2026-11-04 while answering sxrep_VZX9K6YFMT3K, reproduced on main. It now answers
+  to the same rules as exec: refused with `validator_not_allowed` when exec is disabled, allowed in
+  `exec_mode: unrestricted`, and otherwise only when `allowed_commands` covers it. `validator_preset` runs a
+  fixed check and is unaffected. Both the single-call and the chunked edit are covered.
+- `backup_dir` must fall under a file_ops entry with `access: rw` (`path_not_allowed` otherwise). It was
+  passed through unchecked, so the copy of the previous version could be written to any directory the
+  agent's user could write.
+- THREAT_MODEL.md: boundary 2, 4.1 and 4.2 updated.
+- tests/test_edit_validator_policy.py: 12 tests with the real vendored safe edit; 4 sabotages caught (no
+  validator check, none on the chunked path, exec-disabled branch removed, backup_dir passed through).
+  Suite passes on 3.12 and 3.14 (1063 passed).
+
 ## 0.23.56 - Protocol 1.13.5 - 2026-11-01
 
 - Protocol 1.13.5 (sx-review on 1.13.4): a huge error.details no longer makes bound_response drop the
