@@ -3,6 +3,16 @@
 Notable changes to `sentinelx-cloud-core`. Human-readable, date-stamped
 entries; releases before 0.3.0 predate this file — see the git history.
 
+## 0.23.58 - Finding of sx-review on 0.23.57: a sudo edit's validator runs as root - 2026-11-04
+
+- A sudo edit starts the safe edit, and with it the validator, as root. 0.23.57 checked the validator
+  against allowed_commands as it was written, so with allowed_commands [cat] a sudo edit with
+  validator "cat /etc/shadow /nonexistent" read /etc/shadow as root and returned it in validation_failed,
+  while exec refuses `sudo cat`. A sudo edit's validator is now checked as `sudo <validator>`, the same
+  string exec would need. Found and reproduced by sx-review on 2bf6aa9 before 0.23.57 was offered.
+- tests/test_edit_validator_policy.py: 2 more tests (the check itself, and the handler with a deadline);
+  sabotage caught. Suite passes on 3.12 and 3.14.
+
 ## 0.23.57 - edit's validator and backup_dir answer to the policy (security) - 2026-11-04
 
 - sentinel_edit's custom `validator` is a command the safe edit runs before installing the change, and

@@ -13,6 +13,7 @@ command ran (or did not) by the file it writes.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,7 @@ import pytest
 import sentinelx_core
 from sentinelx_core.executor import HandlerError
 from sentinelx_core.handlers import build_registry
+from sentinelx_core.handlers.edit import _check_validator
 from sentinelx_core.policy import FileOpsPath, Policy
 
 SRC = str(Path(sentinelx_core.__file__).resolve().parents[1])
@@ -154,3 +156,28 @@ async def test_backup_dir_inside_rw_receives_the_copy(tmp_path, real_safe_edit) 
     assert res["ok"] is True, res
     copies = list(baks.glob("app.txt.bak.*"))
     assert len(copies) == 1 and copies[0].read_text() == "old\n"
+
+
+# --- sudo edits run the validator as root (sx-review on 2bf6aa9) --------------
+
+def test_sudo_edit_checks_the_validator_as_sudo_command() -> None:
+    p = Policy(exec_mode="allowlist", allowed_commands=("cat",))
+    with pytest.raises(HandlerError) as exc:
+        _check_validator(p, {"validator": "cat /etc/shadow /nonexistent", "sudo": True})
+    assert exc.value.code == "validator_not_allowed"
+    assert exc.value.details["checked_as"] == "sudo cat /etc/shadow /nonexistent"
+    _check_validator(p, {"validator": "cat {file}", "sudo": False})  # not as root: allowed
+    _check_validator(Policy(exec_mode="allowlist", allowed_commands=("sudo cat",)),
+                     {"validator": "cat {file}", "sudo": True})
+
+
+@pytest.mark.asyncio
+async def test_sudo_edit_with_validator_refused_before_anything_runs(tmp_path, real_safe_edit) -> None:
+    policy, target, _ = _setup(tmp_path, exec_mode="allowlist", allowed_commands=("cat",))
+    # Deadline: if the check is gone the handler starts `sudo <helper>`, which may wait for a password.
+    with pytest.raises(HandlerError) as exc:
+        await asyncio.wait_for(
+            _edit(policy, real_safe_edit, {"path": str(target), "mode": "write", "new_text": "new\n",
+                                           "sudo": True, "validator": "cat /etc/shadow /nonexistent"}), 15)
+    assert exc.value.code == "validator_not_allowed"
+    assert target.read_text() == "old\n"

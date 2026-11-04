@@ -188,7 +188,7 @@ def _check_validator(policy: Policy, payload: dict[str, Any]) -> None:
     agent's user, or as root for a sudo edit. Found 2026-11-04 while answering
     sxrep_VZX9K6YFMT3K. It now answers to the same rules as exec: refused when
     exec is disabled, allowed in exec_mode unrestricted, and otherwise only
-    when allowed_commands covers it. validator_preset runs one of a fixed set
+    when allowed_commands covers it (as `sudo <validator>` for a sudo edit). validator_preset runs one of a fixed set
     of checks and is unaffected.
     """
     validator = payload.get("validator")
@@ -207,14 +207,24 @@ def _check_validator(policy: Policy, payload: dict[str, Any]) -> None:
         )
     if policy.effective_exec_mode == "unrestricted":
         return
-    if not policy.is_command_allowed(validator):
+    # A sudo edit starts the helper, and with it the validator, as root. exec
+    # runs a command as root only when allowed_commands covers `sudo <command>`,
+    # so the validator answers for the same string (sx-review on 2bf6aa9:
+    # allowed_commands [cat] and sudo=true read /etc/shadow through the
+    # validator's failure output).
+    as_root = bool(payload.get("sudo", False))
+    command = f"sudo {validator}" if as_root else validator
+    if not policy.is_command_allowed(command):
         raise HandlerError(
             "validator_not_allowed",
-            "A custom validator runs a command, and this one is not covered by "
-            "allowed_commands on this host, so it was not run and nothing was "
-            "written. Use validator_preset, or ask the operator to add the "
-            "command to allowed_commands.",
-            details={"validator": validator, "allowed_commands": list(policy.allowed_commands)},
+            "A custom validator runs a command"
+            + (" (as root, because this is a sudo edit)" if as_root else "")
+            + ", and allowed_commands on this host does not cover "
+            + repr(command)
+            + ", so it was not run and nothing was written. Use validator_preset, "
+            "or ask the operator to add the command to allowed_commands.",
+            details={"validator": validator, "checked_as": command,
+                     "allowed_commands": list(policy.allowed_commands)},
         )
 
 
